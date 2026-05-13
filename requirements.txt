@@ -1,0 +1,19 @@
+# Pipeline
+mediapipe>=0.10.14,<0.10.18
+opencv-python>=4.8
+numpy>=1.24
+matplotlib>=3.7
+
+# Web service
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pydantic-settings>=2.5
+
+# Database
+sqlalchemy[asyncio]>=2.0
+asyncpg>=0.29
+alembic>=1.13
+
+# Object storage (Cloudflare R2 via S3-compatible API)
+boto3>=1.34

@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.python-version
+
+# Node / Vite
+node_modules/
+web/dist/
+*.log
+.npm
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Local storage backend (LocalStorage)
+_storage/
+
+# Job working dirs and outputs
+jobs/
+*.zip
+
+# Large test media (kept locally for smoke tests, not pushed)
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.csv
+*.png
+
+# MediaPipe model weights (downloaded at build/deploy)
+*.task
+
+# Auxiliary scripts kept locally but excluded from the web-app deploy
+/compare.py
+/preview_rich.py
+/retarget.py
+/maya_import.py
+/mapping.example.json
+
+# Windows / WSL artifacts
+*:Zone.Identifier
+desktop.ini
+nul
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Stray legacy files
+/gitignore
