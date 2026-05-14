@@ -1,0 +1,60 @@
+# VCS / editor / OS noise
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+*:Zone.Identifier
+
+# Python local dev artifacts
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Vite — built inside the image
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Local storage backend, job working dirs
+_storage/
+jobs/
+
+# Local secrets / env files (image gets env via Railway)
+.env
+.env.*
+
+# Local test media / fixtures — large and not used at runtime
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.csv
+*.png
+*.zip
+
+# Auxiliary scripts excluded from the deployable image. Note:
+# preview_rich.py is NOT auxiliary — pipeline/preview_overlay.py imports
+# drawing helpers from it, so it lives inside pipeline/ and is part of the
+# package.
+compare.py
+retarget.py
+maya_import.py
+mapping.example.json
+
+# Documentation source — not needed in the image
+README.md
+prd.md
+*.md:Zone.Identifier
+
+# Container build artifacts shouldn't end up in the context
+Dockerfile.*
+docker-compose*.yml

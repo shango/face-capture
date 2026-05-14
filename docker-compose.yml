@@ -1,0 +1,24 @@
+# Local dev only. Brings up Postgres on :5432 with credentials that match
+# the DATABASE_URL in .env.example. The web service is NOT in this compose
+# file — run uvicorn and Vite directly with `make api` / `make web` for
+# faster reloads and easier debugging.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: facecap
+      POSTGRES_PASSWORD: facecap
+      POSTGRES_DB: facecap
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "facecap", "-d", "facecap"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:

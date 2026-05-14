@@ -38,7 +38,6 @@ jobs/
 
 # Auxiliary scripts kept locally but excluded from the web-app deploy
 /compare.py
-/preview_rich.py
 /retarget.py
 /maya_import.py
 /mapping.example.json

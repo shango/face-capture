@@ -1,0 +1,21 @@
+# Railway service configuration.
+# Build is auto-detected from the Dockerfile in the repo root.
+# Set the following env vars in the Railway dashboard for this service:
+#   API_KEY                  — shared secret required on /api requests
+#   DATABASE_URL             — Postgres URL (use Railway's Postgres plugin;
+#                              prefix the URL with `postgresql+asyncpg://`)
+#   STORAGE_BACKEND          — `r2` in production
+#   R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
+#   R2_BUCKET, R2_REGION     — Cloudflare R2 credentials
+#   WEB_DIST_DIR             — `/app/web/dist` (default in image; override
+#                              only if you change the image layout)
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
