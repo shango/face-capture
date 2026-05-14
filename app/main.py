@@ -20,14 +20,37 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .cleanup import Cleanup
 from .config import get_settings
+from .db import dispose_engine
 from .health import router as health_router
+from .jobs import router as jobs_router
+from .storage import LocalStorage, get_storage, make_local_storage_router
+from .worker import Worker
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # DB engine, worker task, and cleanup task get wired here in later tasks.
-    yield
+    settings = get_settings()
+    storage = get_storage() if (settings.worker_enabled or settings.cleanup_enabled) else None
+    worker: Worker | None = None
+    cleanup: Cleanup | None = None
+    if settings.worker_enabled:
+        assert storage is not None
+        worker = Worker(settings, storage)
+        worker.start()
+    if settings.cleanup_enabled:
+        assert storage is not None
+        cleanup = Cleanup(settings, storage)
+        cleanup.start()
+    try:
+        yield
+    finally:
+        if cleanup is not None:
+            await cleanup.stop()
+        if worker is not None:
+            await worker.stop()
+        await dispose_engine()
 
 
 def create_app() -> FastAPI:
@@ -48,6 +71,15 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(health_router)
+    app.include_router(jobs_router)
+
+    # When the LocalStorage backend is active, mount its signed-URL serving
+    # route so the SPA can download bundles via the same origin. With R2 the
+    # signed URL points to Cloudflare directly, so no mount is needed.
+    if settings.storage_backend == "local":
+        storage = get_storage()
+        assert isinstance(storage, LocalStorage)
+        app.include_router(make_local_storage_router(storage))
 
     # SPA static serving: only mounted when the Vite build exists. In dev,
     # the frontend runs on Vite's own server and proxies /api + /health here.
