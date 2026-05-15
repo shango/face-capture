@@ -1,8 +1,8 @@
 # Product Requirements Document: Facial Capture Pipeline
 
-**Version:** 1.0
-**Status:** Draft
-**Last updated:** 2026-05-13
+**Version:** 1.1
+**Status:** Reflects the v2 simplification pass (2026-05-14). v2 ships as a public, no-auth, no-DB single-service web app with strict input constraints.
+**Last updated:** 2026-05-14
 **Owner:** Shannon Gold
 
 ---
@@ -13,11 +13,14 @@ A facial animation capture pipeline that converts standard monocular video into 
 
 - Open-source / free tooling only
 - CPU-only operation (no GPU dependency)
-- Simple operational footprint (small studio infrastructure)
+- Minimal operational footprint (single hosted service, no database)
 - Predictable per-job cost
 - A baseline that animators can polish from, not finished animation
 
-The pipeline starts as a local CLI tool (current state), then progresses to a small hosted web service on Railway.
+The pipeline ships in two forms:
+
+- **v1 local CLI** — the pipeline as a collection of Python scripts. Permissive about input format.
+- **v2 hosted web app** — a single Railway service that serves a public dropzone page. No accounts, no database, strict input subset (1920×1080, ≤5s, .mp4). Distributed to a small known audience (~50 users) by URL.
 
 ---
 
@@ -36,7 +39,7 @@ Small studios need a middle ground: free or cheap, no special capture hardware, 
 
 ### 2.2 What this tool addresses
 
-Convert existing monocular video footage (24fps, 1080p, single subject, ≤5 second clips) into:
+Convert existing monocular video footage into:
 
 1. A blendshape animation CSV using ARKit's standard 52-target naming
 2. A preview video showing tracking quality
@@ -61,6 +64,7 @@ Explicitly out of scope:
 - Rendering finished animation (only data + thin preview)
 - Cinematic-grade or "final-pixel" quality
 - Custom blendshape rigs in v1 (ARKit-52 only initially)
+- **(v2)** User accounts, login, job history, email notifications, rate limiting, quotas, audit trail. The hosted product is a one-shot tool, not a service with users.
 
 ---
 
@@ -169,30 +173,60 @@ This product is explicitly *not* for:
 - Final deliverable: directory containing the four files (preview.mp4, blendshapes.csv, apply_in_maya.py, README.txt)
 - Optional zip packaging
 
-### 4.2 Hosted service (v2, planned)
+### 4.2 Hosted service (v2, simplified)
 
-#### FR-11: Web upload
-- User uploads source video via web form
-- Form accepts file directly or signed upload URL flow for larger files
-- Max file size: 100 MB (covers 5s 1080p at high bitrate plus headroom)
-- Supported types as per FR-1
+The hosted product is a thin web wrapper around the v1 pipeline. It exists to give a small audience (~50 known users) a single URL they can drop a video into, with no install, no login, and no key entry. Anything beyond that minimum is out of scope.
 
-#### FR-12: Async job processing
-- Each upload creates a job record in the database
-- Pipeline runs in a background worker process
-- User polls for completion or receives email notification
-- Target latency: ≤7 minutes per 5-second clip including interpolation
+#### FR-11: Public single-page web app
+- One URL serves a polished landing page with a drag-and-drop dropzone.
+- No authentication. No accounts. No login. No API key. URL is distributed privately to the trusted audience.
+- The page validates input on the client and rejects anything that fails before bytes hit the network.
 
-#### FR-13: Job status / management
-- Each job has a unique ID and a status: queued, running, succeeded, failed
-- Logs from each pipeline step retained for failed jobs (debugging support)
-- Successful jobs produce a download bundle (zip) with signed URL
-- Job artifacts retained for configurable period (default: 7 days)
+#### FR-12: Strict input constraints (hard limits)
 
-#### FR-14: Studio account management (v2.1)
-- Per-studio accounts with login
-- Per-account job history
-- Per-account quota (initially generous, may be tightened based on usage patterns)
+The hosted product accepts a deliberately narrow input subset:
+
+| Constraint | Value | Enforcement |
+|---|---|---|
+| Resolution | exactly **1920 × 1080** | Client probes video metadata; rejects others. |
+| Duration | **≤ 5 seconds** | Client probes duration; rejects longer clips. |
+| Container | **.mp4** only | Client checks `File.type` / extension. |
+| Max file size | 500 MB | Client check + backend `MAX_UPLOAD_BYTES`. |
+
+The local CLI (FR-1) remains permissive; the hosted product is the strict subset.
+
+#### FR-13: Async pipeline execution with status polling
+- Upload returns immediately with a job id and `status=queued`.
+- The pipeline runs in-process on the same Railway service (single `ProcessPoolExecutor` worker per instance) and updates an in-memory job record.
+- The page polls `GET /api/jobs/{id}` every 2s until the status is terminal.
+- On `succeeded`, the page surfaces a download button; on `failed`, it shows the error.
+
+#### FR-14: Signed bundle download
+- Successful jobs upload `bundles/{job_id}.zip` to R2 with a 1-hour signed URL.
+- The browser is redirected to the signed URL directly; the app does not proxy the download.
+- Bundle expiry is enforced by R2 lifecycle rules on the bucket (see FR-15), not by application code.
+
+#### FR-15: Bundle TTL via R2 lifecycle
+- The R2 bucket is configured with a lifecycle rule that auto-deletes objects after a fixed retention period (default 7 days).
+- No application-side cleanup task; no scheduled job; no database column tracking expiry.
+- The lifecycle rule is configured once in the Cloudflare dashboard (or via the R2 API) and is part of the deploy checklist, not the running code.
+
+#### FR-16: Health endpoint
+- `GET /health` returns `200 {"status": "ok"}`. Public, used by Railway's healthcheck.
+
+### 4.3 Removed from v2 (explicit non-requirements)
+
+The following appeared in earlier drafts and are intentionally **not** part of the hosted product:
+
+- ~~Studio account management (was FR-14)~~
+- ~~Email notifications~~
+- ~~Database / persistent job history~~
+- ~~Per-account quotas / rate limiting~~
+- ~~Audit trail / logs UI~~
+- ~~Job re-download after page reload~~ (state is in-memory; refresh loses the active job id unless the SPA stashes it locally)
+- ~~Shared `X-API-Key` auth~~
+
+If any of these become needed, they constitute a v3 scope expansion and would re-introduce a database. Decision deferred until real demand exists.
 
 ---
 
@@ -205,7 +239,8 @@ This product is explicitly *not* for:
 | Local: full pipeline w/ interpolation, 5s clip | <5 min | <10 min |
 | Local: full pipeline w/o interpolation, 5s clip | <30 sec | <60 sec |
 | Hosted: end-to-end including upload/download, 5s clip | <7 min | <15 min |
-| Hosted: queue-time-to-start under normal load | <30 sec | <2 min |
+
+Queue-time targets are no longer meaningful — with a single in-process worker and 50 occasional users, concurrent jobs are rare. The page surfaces queued state honestly when it happens.
 
 ### 5.2 Quality
 
@@ -220,30 +255,30 @@ This product is explicitly *not* for:
 
 ### 5.3 Reliability
 
-- **Local pipeline:** any individual step failure must surface a clear error message naming the failed step; no silent partial output
-- **Hosted service:** target 99% successful job completion rate (excluding user-error inputs like unparseable videos)
-- **No data loss:** uploaded videos retained until job artifacts are delivered; failed jobs retain logs for inspection
+- **Local pipeline:** any individual step failure must surface a clear error message naming the failed step; no silent partial output.
+- **Hosted service:** target 99% successful job completion rate (excluding user-error inputs).
+- **No persistence guarantee:** a service restart drops in-memory job state. A user mid-poll sees `404 — job no longer exists` and re-uploads. This is acceptable because the audience is small and the operation is one-shot.
 
 ### 5.4 Cost (hosted v2)
 
-- **Per-job processing cost:** target <$0.10/job at moderate scale (CPU compute on Railway, R2 storage)
-- **Storage cost:** signed URLs auto-expire bundles; cleanup job purges artifacts after retention period
-- **Per-studio monthly cost ceiling:** target <$50/month operational cost for 100 jobs
+- **Per-job processing cost:** target <$0.10/job at moderate scale (CPU compute on Railway, R2 storage).
+- **Storage cost:** R2 lifecycle deletes bundles after retention; no orphan accumulation.
+- **Monthly operational ceiling:** target <$15/month at the expected ~50 users × a handful of jobs each. Postgres removal eliminates the Railway DB add-on cost.
 
 ### 5.5 Operational footprint
 
-- One Railway service (Python worker + thin HTTP wrapper)
-- One Postgres database for job state
-- One R2/S3 bucket for video and bundle storage
-- No external paid APIs in critical path (no Replicate, no OpenAI, no per-call services)
-- No GPU instances required
+- **One Railway service** running the Dockerfile in this repo (FastAPI + the pipeline).
+- **One R2 bucket** for videos and bundles, with a lifecycle rule for TTL.
+- **No database.** Job state is an in-memory `dict` in the Python process.
+- **No external paid APIs in critical path.** No Replicate, no OpenAI, no Resend, no per-call services.
+- **No GPU instances.**
 
 ### 5.6 Compliance / IP
 
-- All pipeline software uses permissive open-source licenses (MediaPipe = Apache 2.0; ffmpeg = LGPL/GPL with appropriate care)
-- User-uploaded video content treated as confidential; not used for training, not shared
-- ARKit blendshape *names* are an Apple-published standard; usage of the naming convention is not a licensing concern
-- Bundled reference rigs (if added in future) must come with clear commercial-use licensing
+- All pipeline software uses permissive open-source licenses (MediaPipe = Apache 2.0; ffmpeg = LGPL/GPL with appropriate care).
+- User-uploaded video content treated as confidential; not used for training, not shared.
+- ARKit blendshape *names* are an Apple-published standard; usage of the naming convention is not a licensing concern.
+- Bundled reference rigs (if added in future) must come with clear commercial-use licensing.
 
 ---
 
@@ -288,7 +323,7 @@ This product is explicitly *not* for:
        │
        ▼
 ┌──────────────────┐
-│  pipeline.py     │  assembles bundle:
+│  orchestrator.py │  assembles bundle:
 │  bundle assembly │  • preview.mp4
 │                  │  • blendshapes.csv (24fps)
 │                  │  • apply_in_maya.py (CSV path baked)
@@ -299,32 +334,44 @@ This product is explicitly *not* for:
 ### 6.2 Hosted service architecture (v2)
 
 ```
-┌─────────────────┐
-│  Web frontend   │  Cloudflare Pages or similar
-└────────┬────────┘
-         │ POST /jobs (with video upload)
-         ▼
-┌─────────────────────────────────┐
-│  FastAPI service on Railway     │
-│  ┌──────────────────────────┐   │
-│  │ HTTP API                 │   │
-│  │  POST /jobs              │   │
-│  │  GET  /jobs/{id}         │   │
-│  │  GET  /jobs/{id}/bundle  │   │
-│  └──────────┬───────────────┘   │
-│             │                   │
-│  ┌──────────▼───────────────┐   │
-│  │ Job queue worker          │   │
-│  │  (calls pipeline.py)      │   │
-│  └──────────┬───────────────┘   │
-└─────────────┼───────────────────┘
-              │                    ┌─────────────────┐
-              ├─────read/write────►│ Railway Postgres │  (job state)
-              │                    └─────────────────┘
-              │                    ┌─────────────────┐
-              └────read/write─────►│ Cloudflare R2    │  (videos + bundles)
-                                   └─────────────────┘
+┌─────────────────────────────────────────┐
+│  Browser (the user's 50-friend audience)│
+│                                         │
+│  Drops a 1920×1080 ≤5s .mp4 onto        │
+│  the dropzone. Client validates and     │
+│  rejects locally if invalid.            │
+└────────────────┬────────────────────────┘
+                 │ POST /api/jobs (multipart, no auth header)
+                 ▼
+┌─────────────────────────────────────────┐
+│  Railway service (single container)     │
+│  ┌─────────────────────────────────┐    │
+│  │ FastAPI                         │    │
+│  │   GET  /health                  │    │
+│  │   POST /api/jobs                │    │
+│  │   GET  /api/jobs/{id}           │    │
+│  │   GET  /api/jobs/{id}/bundle    │    │
+│  │   GET  /                        │    │
+│  │   GET  /assets/*                │    │
+│  └────────────┬────────────────────┘    │
+│               │ asyncio.create_task     │
+│               ▼                         │
+│  ┌─────────────────────────────────┐    │
+│  │ In-process pipeline runner      │    │
+│  │  (ProcessPoolExecutor, n=1)     │    │
+│  │  state: dict[uuid, JobRecord]   │    │
+│  └────────────┬────────────────────┘    │
+└───────────────┼─────────────────────────┘
+                │
+                │ put/get/delete
+                ▼
+        ┌───────────────────┐
+        │ Cloudflare R2     │  sources + bundles
+        │  + lifecycle rule │  (auto-deletes after 7 days)
+        └───────────────────┘
 ```
+
+No Postgres. No worker queue. No auth layer. No cleanup task. The service starts uvicorn, mounts the SPA, and handles uploads inline.
 
 ### 6.3 Component inventory
 
@@ -335,40 +382,33 @@ This product is explicitly *not* for:
 | `smooth.py` | Pipeline step | Python (pure) | Complete |
 | `resample.py` | Pipeline step | Python (pure) | Complete |
 | `preview_overlay.py` | Pipeline step | Python + OpenCV + MediaPipe | Complete |
-| `pipeline.py` | Orchestrator | Python | Complete |
+| `orchestrator.py` | Pipeline driver | Python | Complete |
 | `apply_in_maya.py` | User artifact | Python (Maya) | Generated per job |
 | `interp.py` | Optional step | Python + RIFE/ffmpeg | Complete (RIFE optional) |
-| `retarget.py` | Auxiliary | Python | Complete (not in v1 path) |
-| FastAPI wrapper | Hosted layer | Python + FastAPI | Planned (v2) |
-| Job queue | Hosted layer | Postgres LISTEN/NOTIFY or arq | Planned (v2) |
-| R2 integration | Storage layer | boto3 with R2 endpoint | Planned (v2) |
-| Frontend | Client | TBD (HTML form sufficient for v2.0) | Planned (v2) |
+| `retarget.py` | Auxiliary CLI | Python | Complete (not in v1/v2 path) |
+| `app/main.py` + `app/jobs.py` | Hosted web layer | Python + FastAPI | Complete (v2) |
+| `app/storage.py` | Hosted storage layer | boto3 / R2 + LocalStorage dev fallback | Complete (v2) |
+| SPA (`web/`) | Client | React + Vite + TypeScript | Complete (interim); polish pass pending design |
+| Dockerfile + railway.toml | Deploy | Multi-stage Docker | Complete (v2) |
 
-### 6.4 Data model (v2)
+### 6.4 Data model
 
-**`jobs` table (Postgres):**
+**There is no persistent data model.**
 
-| Column | Type | Notes |
-|---|---|---|
-| id | uuid | Primary key |
-| studio_id | uuid | FK to studios (when accounts added) |
-| status | enum | queued, running, succeeded, failed |
-| source_video_url | text | R2 signed URL or key |
-| bundle_url | text | R2 signed URL when complete |
-| created_at | timestamptz | |
-| started_at | timestamptz | nullable |
-| completed_at | timestamptz | nullable |
-| error_log | text | nullable, populated on failure |
-| pipeline_config | jsonb | which flags were used (interpolate on/off, etc.) |
-| source_duration_seconds | numeric | for billing/quota |
-| expires_at | timestamptz | auto-cleanup deadline |
+Job state lives in a module-level `dict[uuid.UUID, JobRecord]` in `app/jobs.py`. A `JobRecord` is an in-memory dataclass with the same fields the API surfaces:
+
+```
+id, status, created_at, started_at, completed_at,
+error_log, bundle_key, source_duration_seconds
+```
+
+A process restart loses all in-flight and terminal records. R2 still holds any bundle that was uploaded before the restart, but the application no longer has a job id pointing at it; those bundles age out via the R2 lifecycle rule. This is a deliberate trade-off — see §5.3.
 
 **Object storage layout (R2):**
 
 ```
-videos/{job_id}.mp4         source video upload
-bundles/{job_id}.zip        delivery bundle
-intermediates/{job_id}/     work files (auto-cleaned)
+sources/{job_id}.<ext>       source video upload (deleted on success)
+bundles/{job_id}.zip         delivery bundle (auto-deleted by lifecycle rule)
 ```
 
 ---
@@ -389,7 +429,7 @@ wget <face_landmarker.task URL>
 
 **Per job:**
 ```bash
-python pipeline.py source.mp4 -o ./jobs/myjob --zip
+python -m pipeline.orchestrator source.mp4 -o ./jobs/myjob --zip
 ```
 
 **Apply in Maya:**
@@ -402,27 +442,22 @@ python pipeline.py source.mp4 -o ./jobs/myjob --zip
 ### 7.2 Hosted service (v2)
 
 **Submit a job:**
-1. User loads the web upload page
-2. Drops a video file into the form
-3. Form POSTs to `/jobs` endpoint, which:
-   - Uploads video to R2
-   - Creates a `jobs` row with `status=queued`
-   - Returns `{ job_id }`
-4. User is redirected to a status page
+1. User loads the public URL.
+2. Drag-and-drops a `.mp4` onto the dropzone (or clicks to pick a file).
+3. The page probes the video's resolution and duration. If anything fails the 1920×1080 / ≤5s / .mp4 check, the page shows a clear error and never starts the upload.
+4. If valid, the file is `POST`ed to `/api/jobs` (multipart). The server streams to R2, creates an in-memory job record, and returns `{ id, status: "queued" }`.
+5. The page transitions to a status view and polls `/api/jobs/{id}` every 2s.
 
 **Job lifecycle:**
-1. Worker polls Postgres (or listens on NOTIFY channel) for queued jobs
-2. Picks one up, marks `status=running`
-3. Downloads source from R2 to local temp storage
-4. Calls `pipeline.run_pipeline()`
-5. Uploads resulting bundle to R2
-6. Marks `status=succeeded` with bundle URL
-7. (Future) Sends email notification
+1. Backend spawns `asyncio.create_task(_run_pipeline_for_job(...))` immediately on upload.
+2. Pipeline runner downloads the source from R2 to a tempdir, runs `pipeline.orchestrator.run_pipeline` in a `ProcessPoolExecutor` (so MediaPipe doesn't block the event loop).
+3. Bundle uploaded to R2 at `bundles/{id}.zip`. In-memory record's `status` flips to `succeeded` with `bundle_key` set.
+4. On failure, traceback is captured into `error_log` and `status` flips to `failed`.
 
 **Download bundle:**
-1. User's status page polls `/jobs/{id}` periodically
-2. On success, shows download link backed by signed R2 URL
-3. User downloads zip and proceeds as in 7.1 step "Apply in Maya"
+1. Page sees terminal status and shows a "Download bundle" button.
+2. Button calls `/api/jobs/{id}/bundle` which returns a 1-hour signed R2 URL.
+3. Browser is redirected to the signed URL; Cloudflare serves the zip directly.
 
 ---
 
@@ -432,7 +467,7 @@ python pipeline.py source.mp4 -o ./jobs/myjob --zip
 
 A v1 release is acceptable when:
 
-- [ ] `python pipeline.py test.mp4 -o ./jobs/smoketest --no-interpolate` completes in <60s on a modest laptop
+- [ ] `python -m pipeline.orchestrator test.mp4 -o ./jobs/smoketest --no-interpolate` completes in <60s on a modest laptop
 - [ ] Same with interpolation completes in <10 min on the same hardware
 - [ ] Output bundle contains exactly the four expected files
 - [ ] CSV opens cleanly in a spreadsheet; all 52 ARKit columns present; no NaN values
@@ -443,10 +478,11 @@ A v1 release is acceptable when:
 ### 8.2 Acceptance criteria for v2 (hosted)
 
 - [ ] All v1 criteria still pass through the hosted path
-- [ ] Job success rate ≥99% over 50+ test jobs
-- [ ] No data leaks between jobs (signed URLs, bucket policies, etc.)
-- [ ] Cleanup job removes expired artifacts on schedule
+- [ ] Job success rate ≥99% over 50+ test jobs (where input matches the strict constraints)
+- [ ] No data leaks between jobs (signed URLs scoped per-object, bucket private, no listing)
+- [ ] R2 lifecycle rule verified to delete bundles older than the retention period
 - [ ] Operational cost matches projections (FR 5.4)
+- [ ] A user with the URL and a valid clip can produce a bundle with **zero** prior interaction with the operator
 
 ### 8.3 Test plan
 
@@ -461,9 +497,9 @@ A v1 release is acceptable when:
 - Compare against snapshot on each release
 
 **Hosted regression:**
-- Same test videos, run through hosted API
-- Verify identical CSV output (modulo timestamp differences)
-- Verify queue ordering, timeout handling, error recovery
+- `scripts/smoke_test.sh` exercises the full upload → poll → download path against the deployed URL.
+- The same test videos are reused; the smoke test asserts on bundle contents and CSV sanity.
+- No DB / auth assertions in the smoke test (deliberately removed in v1.1).
 
 ### 8.4 Known limitations (document, do not fix)
 
@@ -484,33 +520,33 @@ These should be visible in `README.txt` as "Known limitations of this pipeline t
 
 ### 9.1 v1.x (post-launch local improvements)
 
-- **Channel-aware smoothing:** different filter parameters for brow vs. lip vs. eye channels (brows are noisier, lips need responsiveness)
-- **Per-target scaling in apply script:** user-configurable scale per blendshape (e.g., boost eye blinks 1.8x)
+- **Channel-aware smoothing:** different filter parameters for brow vs. lip vs. eye channels
+- **Per-target scaling in apply script:** user-configurable scale per blendshape (e.g., boost eye blinks 1.8×)
 - **Noise floor threshold:** clip channel values below threshold to zero (kills idle jitter)
-- **Frame-rate-aware filter retuning:** more sophisticated than current 2-tier (24fps/60fps)
+- **Frame-rate-aware filter retuning:** more sophisticated than current 2-tier
 - **Optional per-actor calibration:** user supplies a neutral frame + ROM clip, system computes per-channel scaling factors
 
-### 9.2 v2 (hosted launch)
+### 9.2 v2.x (hosted polish, if demand justifies)
 
-- All FR-11 through FR-13 above
-- Synchronous fallback for `--no-interpolate` mode (fast path returns in <60s)
+- **Wider input acceptance:** relax the strict 1920×1080 / ≤5s constraints once the pipeline proves robust to variation in the hosted environment.
+- **In-browser preview viewer:** play the resulting preview.mp4 inline before download.
+- **Drag-multiple, queue-locally:** still single job at a time on the server, but the page lets the user line up several clips and submit them sequentially.
+- **Client-side resolution downscale:** for users who shoot 4K, offer browser-side ffmpeg.wasm transcoding rather than rejection.
 
-### 9.3 v2.1+ (post-launch hosted improvements)
+### 9.3 v3 (re-introduces persistence if any of these become required)
 
-- Per-studio accounts and login
-- Usage quotas and rate limiting
-- Job history with re-download
-- Email notification on completion
-- Web-based preview viewer (no download needed to inspect quality)
+Any of the following individually re-justifies a database and an auth layer:
 
-### 9.4 v3 (quality escalation, if user demand justifies it)
+- Per-user accounts / job history
+- Email notifications on completion
+- Audit trail / usage analytics
+- Rate limiting beyond what Railway's edge already provides
+- Public release beyond the trusted ~50-user audience
+- **Quality escalation tier with RIFE / EMOCA / GPU compute** (also requires billing)
 
-- **RIFE integration via paid GPU:** Replicate.com endpoint integration, charge per-call. Improves interpolation quality significantly.
-- **EMOCA solver as premium tier:** FLAME-based facial reconstruction. Requires GPU compute (rented) and FLAME commercial licensing (real cost). Premium pricing.
-- **Custom rig retargeting:** non-ARKit-named rigs supported via uploaded mapping JSON or learned mapping
-- **Faceware-tier paid software comparison:** explicit "use this when budget allows" guidance
+Each of these is a meaningful scope expansion and should be planned as a v3 release with its own PRD pass, not added piecemeal to v2.
 
-### 9.5 Explicitly not on roadmap
+### 9.4 Explicitly not on roadmap
 
 - Multi-camera / stereo capture
 - Live / streaming capture
@@ -529,54 +565,59 @@ These would be different products built on different premises.
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| MediaPipe quality is insufficient for any real use case | Medium | High | Validate with one real animator on real clips before further investment; if quality is unacceptable, the entire premise needs reconsidering before building hosted layer |
-| ffmpeg minterpolate is too slow for hosted CPU constraints | Low | Medium | Already known to take ~3 min for 5s clip; if jobs feel too long, add `--no-interpolate` as default and offer interpolation as premium tier |
-| Maya rig variation breaks apply script | Medium | Medium | Apply script designed to handle multi-node ARKit splits; document common rig types and add explicit support per template |
-| MediaPipe API changes in future versions | Low | Low | Pin version range in requirements.txt; bundle topology constants locally so newer MediaPipe doesn't break our preview |
-| Railway service interruption | Low | Medium | Document local pipeline as fallback; users with critical work can run locally |
+| MediaPipe quality is insufficient for any real use case | Medium | High | Validate with one real animator on real clips before further investment |
+| ffmpeg minterpolate is too slow for hosted CPU constraints | Low | Medium | Already known to take ~3 min for 5s clip; documented in performance targets |
+| Maya rig variation breaks apply script | Medium | Medium | Apply script handles multi-node ARKit splits; document common rig types |
+| MediaPipe API changes in future versions | Low | Low | Pin version range in requirements.txt |
+| Railway service restart kills in-flight job | Medium | Low | Acknowledged in §5.3; user re-uploads. R2 bundles aren't lost; only the dict entry is. |
+| Railway service interruption | Low | Medium | Local pipeline is the fallback |
 
 ### 10.2 Product risks
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Users expect Faceware-quality output | High | High | Documentation strongly frames product as "baseline for animator polish"; provide quality samples on landing page |
-| Hosted version cannibalizes local CLI without revenue | Medium | Medium | v2 launches with usage limits; clear path to paid tier exists for higher volume / better quality |
-| Small studio audience too narrow to sustain product | Medium | High | Defer hosting investment until local CLI demonstrates real adoption; this PRD's v2 is contingent on v1 traction |
-| ARKit-only is too restrictive | Medium | Medium | Custom rig mapping already exists in `retarget.py`; can be surfaced in apply script in v1.x if user demand emerges |
+| Users expect Faceware-quality output | High | High | Landing copy frames product as "baseline for animator polish" |
+| Trusted-URL audience grows past intent | Low | Medium | Re-evaluate auth model if the URL spreads; §9.3 lays out the path |
+| ARKit-only is too restrictive | Medium | Medium | Custom rig mapping exists in `retarget.py`; can be surfaced if demand emerges |
 
 ### 10.3 Operational risks
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| User uploads inappropriate content (deepfake material, etc.) | Medium | High | Terms of service prohibit unauthorized use of likeness; reactive moderation policy; no proactive scanning in v1 |
-| Storage costs balloon | Low | Medium | Aggressive retention policy (7 days default); per-studio quotas |
-| Spam / abuse of free tier | Medium | Low | Rate limit per IP and per account; require account for hosted v2 |
+| User uploads inappropriate content | Medium | High | Audience is known and trusted; reactive policy. Re-evaluate before any public release. |
+| Storage costs balloon | Low | Low | R2 lifecycle deletes bundles automatically; sources deleted on success. |
+| Spam / abuse via the public URL | Low | Medium | URL is shared privately; can rotate the deploy URL if it leaks. Backend size + duration limits cap any individual attack. |
 
 ---
 
 ## 11. Open questions
 
-These need decisions before v2 implementation:
+The pre-pivot draft listed five open questions; the simplification pass closed all of them. Recorded here for posterity:
 
-1. **Authentication for hosted v2:** simple shared key, per-studio password auth, or full account system? (Recommendation: shared key for v2.0 if studio is single tenant; account system in v2.1)
-2. **Pricing model:** free, freemium, per-job, monthly subscription? Depends on usage patterns from local CLI adoption.
-3. **Frontend stack:** plain HTML form, simple React, or integration with an existing studio web app? Depends on studio's preferences.
-4. **Hosting provider final choice:** Railway is the working assumption; alternatives (Fly.io, Render) similar. Decision deferred until v2 build starts.
-5. **Email integration for notifications:** Resend (consistent with other projects) or skip in v2.0 and add later?
+1. ~~Authentication for hosted v2~~ → **Closed.** No auth.
+2. ~~Pricing model~~ → **Closed.** Free for the trusted audience. Pricing belongs to a v3 scope.
+3. ~~Frontend stack~~ → **Closed.** React + Vite SPA in `web/`.
+4. ~~Hosting provider~~ → **Closed.** Railway.
+5. ~~Email notifications~~ → **Closed.** No email. Status polling only.
+
+Genuinely open questions for v2.x:
+
+- Should the deploy URL be vanity-named (e.g., a custom domain) or stay on the auto-generated `*.up.railway.app`?
+- Is there a real need for the SPA to remember the in-flight job id across reloads (via `localStorage`)? Currently it does not, because the server-side dict is the source of truth.
 
 ---
 
 ## 12. Glossary
 
-- **ARKit-52:** Apple's standard set of 52 facial blendshape names used in iOS face tracking and widely adopted across the industry. The canonical "ARKit names" set.
+- **ARKit-52:** Apple's standard set of 52 facial blendshape names used in iOS face tracking and widely adopted across the industry.
 - **Blendshape:** A named morph target on a mesh that, when weighted from 0 to 1, deforms the mesh toward a specific facial expression (e.g., "mouthSmileLeft").
 - **MediaPipe:** Google's open-source ML framework. The Face Landmarker model emits ARKit-52 weights and 478-point facial landmarks.
-- **MediaPipe Face Mesh:** The 478-point landmark topology that MediaPipe places on the face. Triangle-based, fixed connectivity.
-- **One Euro filter:** Adaptive low-pass filter (Casiez et al, 2012) that smooths slow motion aggressively while preserving fast motion. Standard tool for face/hand tracking output.
-- **FLAME:** A research-grade anatomical face model (Max Planck Institute) used by higher-quality solvers like EMOCA. Free for non-commercial use.
-- **Markerless capture:** Facial capture that uses only the video image, no physical markers on the performer.
-- **Retargeting:** Mapping animation data from one rig/format to another (here: ARKit-52 → custom rig blendshape names).
-- **CRF / minterpolate / mci / aobmc:** ffmpeg-specific parameters. CRF controls H.264 quality; minterpolate is the temporal interpolation filter; mci/aobmc are its mode flags.
-- **WSL2:** Windows Subsystem for Linux v2, the typical Linux environment running on a Windows host (relevant for the local pipeline's intended environment).
+- **MediaPipe Face Mesh:** The 478-point landmark topology MediaPipe places on the face.
+- **One Euro filter:** Adaptive low-pass filter (Casiez et al, 2012) that smooths slow motion aggressively while preserving fast motion.
+- **FLAME:** A research-grade anatomical face model used by higher-quality solvers like EMOCA.
+- **Markerless capture:** Facial capture using only the video image, no physical markers.
+- **Retargeting:** Mapping animation data from one rig/format to another.
+- **CRF / minterpolate / mci / aobmc:** ffmpeg-specific parameters.
+- **WSL2:** Windows Subsystem for Linux v2.
 - **R2:** Cloudflare's S3-compatible object storage. Cheaper than S3 for egress.
-- **Railway:** A Heroku-like platform-as-a-service. The intended host for the v2 service.
+- **Railway:** A Heroku-like platform-as-a-service.

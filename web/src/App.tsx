@@ -1,99 +1,101 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchBundle, fetchJob, HttpError, uploadJob } from "./api";
 import type { JobDetail } from "./types";
 import { TERMINAL_STATUSES } from "./types";
 
-// --- Persistence ----------------------------------------------------------
-// The API key lives in localStorage so the user doesn't have to paste it
-// every reload; it is a shared secret, not a long-lived credential. A
-// reload while polling resumes the same job by stashing its id too.
-const API_KEY_STORAGE = "face-capture.apiKey";
-const ACTIVE_JOB_STORAGE = "face-capture.activeJobId";
-
 const POLL_INTERVAL_MS = 2000;
-const ALLOWED_EXTENSIONS = [".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"];
+
+// Hard client-side constraints. The pipeline assumes these and the page
+// rejects anything else before bytes hit the network.
+const REQUIRED_WIDTH = 1920;
+const REQUIRED_HEIGHT = 1080;
+const MAX_DURATION_SECONDS = 5;
+const ALLOWED_MIME = "video/mp4";
+const ALLOWED_EXTENSION = ".mp4";
 
 // --- State machine --------------------------------------------------------
 type AppState =
   | { kind: "idle" }
+  | { kind: "validating"; file: File }
   | { kind: "uploading"; file: File; progress: number }
   | { kind: "polling"; jobId: string; job: JobDetail | null }
   | { kind: "succeeded"; job: JobDetail }
   | { kind: "failed"; job: JobDetail }
   | { kind: "error"; message: string; jobId: string | null };
 
-function loadStored(key: string): string {
+interface VideoMeta {
+  width: number;
+  height: number;
+  duration: number;
+}
+
+async function probeVideoMeta(file: File): Promise<VideoMeta> {
+  const url = URL.createObjectURL(file);
   try {
-    return window.localStorage.getItem(key) ?? "";
-  } catch {
-    return "";
+    return await new Promise<VideoMeta>((resolve, reject) => {
+      const video = document.createElement("video");
+      video.preload = "metadata";
+      video.muted = true;
+      video.addEventListener("loadedmetadata", () => {
+        if (!Number.isFinite(video.duration)) {
+          reject(new Error("Could not read video duration."));
+          return;
+        }
+        resolve({
+          width: video.videoWidth,
+          height: video.videoHeight,
+          duration: video.duration,
+        });
+      });
+      video.addEventListener("error", () => {
+        reject(new Error("Could not decode video metadata."));
+      });
+      video.src = url;
+    });
+  } finally {
+    URL.revokeObjectURL(url);
   }
 }
 
-function storeOrClear(key: string, value: string): void {
-  try {
-    if (value) window.localStorage.setItem(key, value);
-    else window.localStorage.removeItem(key);
-  } catch {
-    // Storage is best-effort; ignore quota / privacy-mode failures.
+function validationError(file: File, meta: VideoMeta): string | null {
+  if (meta.width !== REQUIRED_WIDTH || meta.height !== REQUIRED_HEIGHT) {
+    return `Video must be exactly ${REQUIRED_WIDTH}×${REQUIRED_HEIGHT}. Got ${meta.width}×${meta.height}.`;
   }
-}
-
-function fileHasAllowedExtension(name: string): boolean {
-  const lower = name.toLowerCase();
-  return ALLOWED_EXTENSIONS.some((ext) => lower.endsWith(ext));
+  if (meta.duration > MAX_DURATION_SECONDS + 0.05) {
+    return `Video must be ${MAX_DURATION_SECONDS} seconds or shorter. Got ${meta.duration.toFixed(2)}s.`;
+  }
+  if (
+    file.type !== ALLOWED_MIME &&
+    !file.name.toLowerCase().endsWith(ALLOWED_EXTENSION)
+  ) {
+    return "Video must be an .mp4 file.";
+  }
+  return null;
 }
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+  if (bytes < 1024 * 1024 * 1024)
+    return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GiB`;
 }
 
 export function App(): React.JSX.Element {
-  const [apiKey, setApiKey] = useState<string>(() => loadStored(API_KEY_STORAGE));
-  const [state, setState] = useState<AppState>(() => {
-    const resumeId = loadStored(ACTIVE_JOB_STORAGE);
-    return resumeId
-      ? { kind: "polling", jobId: resumeId, job: null }
-      : { kind: "idle" };
-  });
-  const [file, setFile] = useState<File | null>(null);
+  const [state, setState] = useState<AppState>({ kind: "idle" });
+  const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  // Persist the active job id whenever it changes.
-  useEffect(() => {
-    const id =
-      state.kind === "polling" || state.kind === "succeeded" || state.kind === "failed"
-        ? state.job?.id ?? (state.kind === "polling" ? state.jobId : null)
-        : null;
-    storeOrClear(ACTIVE_JOB_STORAGE, id ?? "");
-  }, [state]);
-
-  // Persist the API key on every change.
-  useEffect(() => {
-    storeOrClear(API_KEY_STORAGE, apiKey);
-  }, [apiKey]);
 
   // --- Polling loop ------------------------------------------------------
   useEffect(() => {
     if (state.kind !== "polling") return;
-    if (!apiKey) {
-      setState({
-        kind: "error",
-        message: "API key required to resume polling.",
-        jobId: state.jobId,
-      });
-      return;
-    }
 
     const controller = new AbortController();
     let cancelled = false;
 
     const tick = async (): Promise<void> => {
       try {
-        const job = await fetchJob(apiKey, state.jobId, controller.signal);
+        const job = await fetchJob(state.jobId, controller.signal);
         if (cancelled) return;
         if (TERMINAL_STATUSES.has(job.status)) {
           setState(
@@ -114,7 +116,6 @@ export function App(): React.JSX.Element {
           });
           return;
         }
-        // Transient errors: keep the existing state, log and retry.
         // eslint-disable-next-line no-console
         console.warn("poll failed; will retry", err);
       }
@@ -127,37 +128,34 @@ export function App(): React.JSX.Element {
       controller.abort();
       window.clearInterval(interval);
     };
-    // Re-run only when the polled job id or apiKey changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.kind === "polling" ? state.jobId : null, apiKey]);
+  }, [state.kind === "polling" ? state.jobId : null]);
 
-  // --- Handlers ----------------------------------------------------------
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
-    const picked = event.target.files?.[0] ?? null;
-    if (picked && !fileHasAllowedExtension(picked.name)) {
-      setState({
-        kind: "error",
-        message: `Unsupported file extension. Allowed: ${ALLOWED_EXTENSIONS.join(", ")}.`,
-        jobId: null,
-      });
-      setFile(null);
+  const handleFile = useCallback(async (file: File): Promise<void> => {
+    setState({ kind: "validating", file });
+    let meta: VideoMeta;
+    try {
+      meta = await probeVideoMeta(file);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setState({ kind: "error", message, jobId: null });
       return;
     }
-    setFile(picked);
-  };
 
-  const handleUpload = useCallback(async (): Promise<void> => {
-    if (!file || !apiKey) return;
+    const reason = validationError(file, meta);
+    if (reason) {
+      setState({ kind: "error", message: reason, jobId: null });
+      return;
+    }
+
     setState({ kind: "uploading", file, progress: 0 });
     try {
       const created = await uploadJob({
-        apiKey,
         file,
         onProgress: (fraction) =>
           setState({ kind: "uploading", file, progress: fraction }),
       });
       setState({ kind: "polling", jobId: created.id, job: null });
-      setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (err: unknown) {
       const message =
@@ -168,12 +166,24 @@ export function App(): React.JSX.Element {
             : "Upload failed.";
       setState({ kind: "error", message, jobId: null });
     }
-  }, [apiKey, file]);
+  }, []);
+
+  const onFileInput = (event: React.ChangeEvent<HTMLInputElement>): void => {
+    const picked = event.target.files?.[0] ?? null;
+    if (picked) void handleFile(picked);
+  };
+
+  const onDrop = (event: React.DragEvent<HTMLDivElement>): void => {
+    event.preventDefault();
+    setDragOver(false);
+    const dropped = event.dataTransfer.files?.[0] ?? null;
+    if (dropped) void handleFile(dropped);
+  };
 
   const handleDownload = useCallback(async (): Promise<void> => {
     if (state.kind !== "succeeded") return;
     try {
-      const bundle = await fetchBundle(apiKey, state.job.id);
+      const bundle = await fetchBundle(state.job.id);
       window.location.href = bundle.url;
     } catch (err: unknown) {
       const message =
@@ -184,64 +194,66 @@ export function App(): React.JSX.Element {
             : "Download failed.";
       setState({ kind: "error", message, jobId: state.job.id });
     }
-  }, [apiKey, state]);
+  }, [state]);
 
   const handleReset = (): void => {
-    setFile(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
     setState({ kind: "idle" });
   };
 
-  const canUpload = useMemo(
-    () => state.kind === "idle" && !!file && !!apiKey.trim(),
-    [state.kind, file, apiKey],
-  );
+  const dropEnabled = state.kind === "idle" || state.kind === "error";
 
-  // --- Render ------------------------------------------------------------
   return (
     <main className="app">
       <header>
         <h1>face-capture</h1>
         <p className="sub">
-          Upload a video, the pipeline runs server-side, download the deliverables when it
-          finishes.
+          Drop a {REQUIRED_WIDTH}×{REQUIRED_HEIGHT} mp4 (≤
+          {MAX_DURATION_SECONDS}s). Processing runs server-side; the
+          deliverable bundle downloads when it&apos;s ready.
         </p>
       </header>
 
-      <section className="card">
-        <label className="field">
-          <span>API key</span>
+      {dropEnabled && (
+        <section
+          className={`dropzone ${dragOver ? "dropzone--over" : ""}`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={onDrop}
+          onClick={() => fileInputRef.current?.click()}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              fileInputRef.current?.click();
+            }
+          }}
+        >
+          <p className="dropzone__primary">Drop video here</p>
+          <p className="dropzone__secondary">or click to choose a file</p>
+          <p className="dropzone__hint">
+            {REQUIRED_WIDTH}×{REQUIRED_HEIGHT} · ≤{MAX_DURATION_SECONDS}s · .mp4
+          </p>
           <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="shared secret"
-            autoComplete="off"
-            spellCheck={false}
+            ref={fileInputRef}
+            type="file"
+            accept={ALLOWED_MIME + "," + ALLOWED_EXTENSION}
+            onChange={onFileInput}
+            hidden
           />
-        </label>
-      </section>
+        </section>
+      )}
 
-      {state.kind === "idle" && (
+      {state.kind === "validating" && (
         <section className="card">
-          <label className="field">
-            <span>Source video</span>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={ALLOWED_EXTENSIONS.join(",")}
-              onChange={handleFileChange}
-              disabled={!apiKey.trim()}
-            />
-          </label>
-          {file && (
-            <p className="muted">
-              {file.name} &middot; {formatBytes(file.size)}
-            </p>
-          )}
-          <button type="button" disabled={!canUpload} onClick={() => void handleUpload()}>
-            Upload &amp; queue job
-          </button>
+          <h2>Checking video</h2>
+          <p className="muted">
+            {state.file.name} · {formatBytes(state.file.size)}
+          </p>
         </section>
       )}
 
@@ -249,7 +261,7 @@ export function App(): React.JSX.Element {
         <section className="card">
           <h2>Uploading</h2>
           <p className="muted">
-            {state.file.name} &middot; {formatBytes(state.file.size)}
+            {state.file.name} · {formatBytes(state.file.size)}
           </p>
           <progress value={state.progress} max={1} />
           <p className="muted">{Math.round(state.progress * 100)}%</p>
@@ -258,33 +270,28 @@ export function App(): React.JSX.Element {
 
       {state.kind === "polling" && (
         <section className="card">
-          <h2>{state.job?.status === "running" ? "Running" : "Queued"}</h2>
-          <p className="muted">Job id: <code>{state.jobId}</code></p>
-          {state.job?.started_at && (
-            <p className="muted">Started: {state.job.started_at}</p>
-          )}
+          <h2>{state.job?.status === "running" ? "Processing" : "Queued"}</h2>
+          <p className="muted">
+            Job id: <code>{state.jobId}</code>
+          </p>
           <p className="muted">Polling every {POLL_INTERVAL_MS / 1000}s…</p>
         </section>
       )}
 
       {state.kind === "succeeded" && (
         <section className="card success">
-          <h2>Succeeded</h2>
-          <p className="muted">Job id: <code>{state.job.id}</code></p>
+          <h2>Done</h2>
           {state.job.source_duration_seconds != null && (
             <p className="muted">
               Source duration: {state.job.source_duration_seconds.toFixed(2)}s
             </p>
-          )}
-          {state.job.expires_at && (
-            <p className="muted">Bundle expires: {state.job.expires_at}</p>
           )}
           <div className="row">
             <button type="button" onClick={() => void handleDownload()}>
               Download bundle
             </button>
             <button type="button" className="ghost" onClick={handleReset}>
-              New job
+              New video
             </button>
           </div>
         </section>
@@ -292,13 +299,12 @@ export function App(): React.JSX.Element {
 
       {state.kind === "failed" && (
         <section className="card failure">
-          <h2>Failed</h2>
-          <p className="muted">Job id: <code>{state.job.id}</code></p>
+          <h2>Processing failed</h2>
           {state.job.error_log && (
             <pre className="error-log">{state.job.error_log}</pre>
           )}
           <button type="button" onClick={handleReset}>
-            New job
+            New video
           </button>
         </section>
       )}
@@ -307,9 +313,8 @@ export function App(): React.JSX.Element {
         <section className="card failure">
           <h2>Error</h2>
           <p>{state.message}</p>
-          {state.jobId && <p className="muted">Job id: <code>{state.jobId}</code></p>}
           <button type="button" onClick={handleReset}>
-            Reset
+            Try again
           </button>
         </section>
       )}

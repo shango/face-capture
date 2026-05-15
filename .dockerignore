@@ -57,4 +57,3 @@ prd.md
 
 # Container build artifacts shouldn't end up in the context
 Dockerfile.*
-docker-compose*.yml

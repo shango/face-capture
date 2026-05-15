@@ -19,6 +19,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import secrets
 import time
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -94,13 +95,14 @@ class LocalStorage:
     """Filesystem-backed storage for development.
 
     Signed URL scheme: `/storage/<key>?exp=<unix_ts>&sig=<urlsafe-b64 hmac>`.
-    HMAC-SHA256 over `key:exp` with the shared API key as the secret. This
-    deliberately re-uses the API key — local dev has a single trust boundary.
+    HMAC-SHA256 over `key:exp` with a per-process random secret. URLs do not
+    survive a restart — fine for dev where the worker is in-process and
+    completion is fast.
     """
 
     def __init__(self, settings: Settings) -> None:
         self._root = Path(settings.local_storage_dir).resolve()
-        self._secret = settings.api_key.encode("utf-8")
+        self._secret = secrets.token_bytes(32)
         self._root.mkdir(parents=True, exist_ok=True)
 
     def _resolve(self, key: str) -> Path:

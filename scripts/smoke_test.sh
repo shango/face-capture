@@ -2,11 +2,10 @@
 # End-to-end smoke test against a running face-capture API.
 #
 # Usage:
-#   API_URL=http://localhost:8000 API_KEY=... ./scripts/smoke_test.sh path/to/test.mp4
+#   API_URL=http://localhost:8000 ./scripts/smoke_test.sh path/to/test.mp4
 #
 # Defaults:
 #   API_URL=http://localhost:8000
-#   API_KEY=$API_KEY    (loaded from your shell or .env)
 #   VIDEO=test.mp4      (or first positional arg)
 #   TIMEOUT=900         (max seconds to wait for the job)
 #
@@ -20,10 +19,6 @@ VIDEO="${1:-${VIDEO:-test.mp4}}"
 TIMEOUT="${TIMEOUT:-900}"
 POLL_INTERVAL="${POLL_INTERVAL:-2}"
 
-if [ -z "${API_KEY:-}" ]; then
-  echo "FAIL: API_KEY env var is required." >&2
-  exit 1
-fi
 if [ ! -f "$VIDEO" ]; then
   echo "FAIL: video file not found: $VIDEO" >&2
   exit 1
@@ -56,15 +51,15 @@ if ! curl -fsS "$API_URL/health" >/dev/null; then
 fi
 echo "    ok"
 
-# 2. Auth gate sanity check --------------------------------------------------
-echo "==> GET /api/jobs/00000000-0000-0000-0000-000000000000 without key (expect 401/403)"
+# 2. Unknown job returns 404 --------------------------------------------------
+echo "==> GET /api/jobs/00000000-0000-0000-0000-000000000000 (expect 404)"
 status=$(curl -s -o /dev/null -w '%{http_code}' \
   "$API_URL/api/jobs/00000000-0000-0000-0000-000000000000")
-if [ "$status" != "401" ] && [ "$status" != "403" ]; then
-  echo "FAIL: expected 401/403 without key, got $status" >&2
+if [ "$status" != "404" ]; then
+  echo "FAIL: expected 404 for unknown job id, got $status" >&2
   exit 1
 fi
-echo "    auth gate returns $status as expected"
+echo "    unknown job returns 404 as expected"
 
 # 3. Upload ------------------------------------------------------------------
 # Match what a browser sends: derive the MIME from the file extension.
@@ -83,7 +78,6 @@ esac
 echo "==> POST /api/jobs (Content-Type: $mime)"
 t_upload_start=$(date +%s)
 upload_response=$(curl -fsS \
-  -H "X-API-Key: $API_KEY" \
   -F "video=@${VIDEO};type=${mime}" \
   "$API_URL/api/jobs")
 t_upload_end=$(date +%s)
@@ -100,7 +94,7 @@ echo "==> Polling /api/jobs/$job_id every ${POLL_INTERVAL}s (timeout ${TIMEOUT}s
 t_poll_start=$(date +%s)
 final_status=""
 while true; do
-  detail=$(curl -fsS -H "X-API-Key: $API_KEY" "$API_URL/api/jobs/$job_id")
+  detail=$(curl -fsS "$API_URL/api/jobs/$job_id")
   status=$(echo "$detail" | jget .status)
   elapsed=$(( $(date +%s) - t_poll_start ))
   echo "    [${elapsed}s] status=$status"
@@ -130,7 +124,7 @@ echo "    succeeded after ${processing_time}s"
 
 # 5. Bundle URL + download ---------------------------------------------------
 echo "==> GET /api/jobs/$job_id/bundle"
-bundle_response=$(curl -fsS -H "X-API-Key: $API_KEY" "$API_URL/api/jobs/$job_id/bundle")
+bundle_response=$(curl -fsS "$API_URL/api/jobs/$job_id/bundle")
 bundle_url=$(echo "$bundle_response" | jget .url)
 expires_in=$(echo "$bundle_response" | jget .expires_in)
 if [ -z "$bundle_url" ] || [ "$bundle_url" = "null" ]; then

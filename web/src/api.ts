@@ -86,7 +86,6 @@ function parseJobDetail(body: unknown): JobDetail {
       body.source_duration_seconds,
       "source_duration_seconds",
     ),
-    expires_at: asStringOrNull(body.expires_at, "expires_at"),
   };
 }
 
@@ -107,20 +106,14 @@ function parseBundleDownload(body: unknown): BundleDownload {
   };
 }
 
-function authHeaders(apiKey: string): HeadersInit {
-  return { "X-API-Key": apiKey };
-}
-
 export interface UploadOptions {
-  apiKey: string;
   file: File;
   onProgress?: (fractionComplete: number) => void;
   signal?: AbortSignal;
 }
 
 // XMLHttpRequest is the only browser API that exposes upload progress
-// events; fetch() does not. We wrap it in a Promise so the caller still
-// gets an async interface.
+// events; fetch() does not.
 export function uploadJob(opts: UploadOptions): Promise<JobCreated> {
   return new Promise((resolve, reject) => {
     const form = new FormData();
@@ -128,7 +121,6 @@ export function uploadJob(opts: UploadOptions): Promise<JobCreated> {
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/jobs");
-    xhr.setRequestHeader("X-API-Key", opts.apiKey);
 
     if (opts.onProgress && xhr.upload) {
       xhr.upload.addEventListener("progress", (event: ProgressEvent) => {
@@ -183,12 +175,10 @@ export function uploadJob(opts: UploadOptions): Promise<JobCreated> {
 }
 
 export async function fetchJob(
-  apiKey: string,
   jobId: string,
   signal?: AbortSignal,
 ): Promise<JobDetail> {
   const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, {
-    headers: authHeaders(apiKey),
     signal,
   });
   if (!response.ok) throw await parseError(response);
@@ -196,13 +186,9 @@ export async function fetchJob(
   return parseJobDetail(body);
 }
 
-export async function fetchBundle(
-  apiKey: string,
-  jobId: string,
-): Promise<BundleDownload> {
+export async function fetchBundle(jobId: string): Promise<BundleDownload> {
   const response = await fetch(
     `/api/jobs/${encodeURIComponent(jobId)}/bundle`,
-    { headers: authHeaders(apiKey) },
   );
   if (!response.ok) throw await parseError(response);
   const body: unknown = await response.json();

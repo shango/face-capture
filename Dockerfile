@@ -2,8 +2,7 @@
 #
 # Stage 1 (web): builds the Vite SPA into /build/web/dist.
 # Stage 2 (runtime): python:3.11-slim with ffmpeg and the MediaPipe model,
-#   copies the SPA build, and runs Alembic migrations on container start
-#   before launching uvicorn.
+#   copies the SPA build, and launches uvicorn.
 
 # ---- Stage 1: SPA build ----------------------------------------------------
 FROM node:20-slim AS web
@@ -55,8 +54,6 @@ RUN pip install --upgrade pip \
 # Application code.
 COPY app/ ./app/
 COPY pipeline/ ./pipeline/
-COPY migrations/ ./migrations/
-COPY alembic.ini ./
 
 # MediaPipe face-landmarker model — pinned to the float16 v1 build used by
 # the local pipeline. Fetched at build time so the runtime image is
@@ -68,7 +65,7 @@ RUN curl -fSL \
 # Built SPA from stage 1.
 COPY --from=web /build/web/dist ./web/dist
 
-# Entrypoint: run migrations then exec uvicorn so signals reach the server.
+# Entrypoint execs uvicorn so signals reach the server.
 COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 

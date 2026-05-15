@@ -2,7 +2,7 @@
 
 Mounts:
   - /health           liveness probe (public)
-  - /api/...          JSON API (gated by X-API-Key; wired in later tasks)
+  - /api/...          JSON API (public — no auth)
   - /assets, /*       built Vite SPA from `settings.web_dist_dir` (production)
 
 In dev the SPA is served by Vite on its own port; the FastAPI app only serves
@@ -20,37 +20,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .cleanup import Cleanup
 from .config import get_settings
-from .db import dispose_engine
 from .health import router as health_router
-from .jobs import router as jobs_router
+from .jobs import router as jobs_router, shutdown_executor
 from .storage import LocalStorage, get_storage, make_local_storage_router
-from .worker import Worker
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    settings = get_settings()
-    storage = get_storage() if (settings.worker_enabled or settings.cleanup_enabled) else None
-    worker: Worker | None = None
-    cleanup: Cleanup | None = None
-    if settings.worker_enabled:
-        assert storage is not None
-        worker = Worker(settings, storage)
-        worker.start()
-    if settings.cleanup_enabled:
-        assert storage is not None
-        cleanup = Cleanup(settings, storage)
-        cleanup.start()
     try:
         yield
     finally:
-        if cleanup is not None:
-            await cleanup.stop()
-        if worker is not None:
-            await worker.stop()
-        await dispose_engine()
+        shutdown_executor()
 
 
 def create_app() -> FastAPI:
@@ -67,7 +48,7 @@ def create_app() -> FastAPI:
             allow_origins=settings.cors_origins,
             allow_credentials=False,
             allow_methods=["GET", "POST"],
-            allow_headers=["X-API-Key", "Content-Type"],
+            allow_headers=["Content-Type"],
         )
 
     app.include_router(health_router)
@@ -81,8 +62,7 @@ def create_app() -> FastAPI:
         assert isinstance(storage, LocalStorage)
         app.include_router(make_local_storage_router(storage))
 
-    # SPA static serving: only mounted when the Vite build exists. In dev,
-    # the frontend runs on Vite's own server and proxies /api + /health here.
+    # SPA static serving: only mounted when the Vite build exists.
     dist = settings.web_dist_dir
     if dist.is_dir() and (dist / "index.html").is_file():
         assets_dir = dist / "assets"
@@ -97,9 +77,6 @@ def create_app() -> FastAPI:
         async def spa_index() -> FileResponse:
             return FileResponse(dist / "index.html")
 
-        # Catch-all for client-side routing. Must be registered AFTER /api and
-        # /health routers so they take precedence. (Currently there is no
-        # client-side routing — this is forward-compatible.)
         @app.get("/{full_path:path}", include_in_schema=False)
         async def spa_catch_all(full_path: str) -> FileResponse:
             candidate = dist / full_path

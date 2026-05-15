@@ -1,5 +1,4 @@
-// Mirror of backend Pydantic models. Kept narrow on purpose: a typo here
-// will surface as a runtime parse error in api.ts, not a silent `any`.
+// Mirror of backend Pydantic models.
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed";
 
@@ -22,7 +21,6 @@ export interface JobDetail {
   completed_at: string | null;
   error_log: string | null;
   source_duration_seconds: number | null;
-  expires_at: string | null;
 }
 
 export interface BundleDownload {

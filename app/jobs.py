@@ -1,22 +1,32 @@
-"""Job HTTP endpoints.
+"""Job HTTP endpoints — in-memory state, no database.
 
-Routes (all under `/api` and gated by `X-API-Key`):
+Routes:
+  POST  /api/jobs               multipart upload, returns {id, status, created_at}
+  GET   /api/jobs/{id}          current status snapshot
+  GET   /api/jobs/{id}/bundle   signed URL for the completed bundle
 
-  POST   /api/jobs                — multipart upload, returns {id, status, created_at}
-  GET    /api/jobs/{id}           — current status snapshot
-  GET    /api/jobs/{id}/bundle    — signed URL for the completed bundle
+Job state lives in a module-level dict. State is lost on process restart;
+this app is one-off-per-video with no accounts, so re-upload is the recovery
+path. R2 lifecycle rules handle bundle expiry.
 
-The POST handler streams the upload to storage, then inserts the `jobs` row.
-On any failure after the upload starts, the partial object is deleted so we
-do not leak orphan files. The cleanup task (#7) is a safety net for crashes.
+The pipeline runs in a ProcessPoolExecutor so MediaPipe's CPU work does not
+block the event loop.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import shutil
+import subprocess
+import tempfile
+import traceback
 import uuid
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
-from typing import Annotated, BinaryIO
+from pathlib import Path, PurePosixPath
+from typing import Annotated, Any, BinaryIO
 
 from fastapi import (
     APIRouter,
@@ -27,14 +37,54 @@ from fastapi import (
     UploadFile,
     status,
 )
-from pydantic import BaseModel, ConfigDict
-from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel
 
-from .auth import require_api_key
 from .config import Settings, get_settings
-from .db import session_dependency
-from .models import Job, JobStatus
 from .storage import Storage, get_storage
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Job state
+# ---------------------------------------------------------------------------
+
+
+class JobStatus:
+    queued = "queued"
+    running = "running"
+    succeeded = "succeeded"
+    failed = "failed"
+
+
+@dataclass
+class JobRecord:
+    id: uuid.UUID
+    status: str
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    error_log: str | None = None
+    bundle_key: str | None = None
+    source_duration_seconds: float | None = None
+
+
+_jobs: dict[uuid.UUID, JobRecord] = {}
+_executor: ProcessPoolExecutor | None = None
+
+
+def get_executor() -> ProcessPoolExecutor:
+    global _executor
+    if _executor is None:
+        _executor = ProcessPoolExecutor(max_workers=1)
+    return _executor
+
+
+def shutdown_executor() -> None:
+    global _executor
+    if _executor is not None:
+        _executor.shutdown(wait=False, cancel_futures=True)
+        _executor = None
 
 
 # ---------------------------------------------------------------------------
@@ -44,23 +94,18 @@ from .storage import Storage, get_storage
 
 class JobCreated(BaseModel):
     id: uuid.UUID
-    status: JobStatus
+    status: str
     created_at: datetime
 
 
 class JobDetail(BaseModel):
-    """Full status view of a job — what the SPA polls."""
-
-    model_config = ConfigDict(from_attributes=True)
-
     id: uuid.UUID
-    status: JobStatus
+    status: str
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
     error_log: str | None
     source_duration_seconds: float | None
-    expires_at: datetime | None
 
 
 class BundleDownload(BaseModel):
@@ -75,24 +120,15 @@ class BundleDownload(BaseModel):
 
 ALLOWED_VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"})
 DOWNLOAD_URL_TTL_SECONDS = 3600
-# Content-Length covers the whole multipart envelope, not just the file. Allow
-# this much headroom for framing before rejecting a request outright; the
-# bounded reader still enforces the precise file-size limit.
 _CONTENT_LENGTH_HEADROOM = 1 * 1024 * 1024
+_ERROR_LOG_MAX = 8000
 
 
 class _UploadTooLarge(Exception):
-    """Raised by `_BoundedReader` when the upload exceeds the size limit."""
+    pass
 
 
 class _BoundedReader:
-    """Wraps a sync file-like object and aborts after `limit` bytes are read.
-
-    Used to enforce `settings.max_upload_bytes` while streaming to storage.
-    Starlette buffers the multipart body before we run, so this is defense
-    in depth — a proxy-level limit is the real protection at the edge.
-    """
-
     def __init__(self, source: BinaryIO, limit: int) -> None:
         self._source = source
         self._limit = limit
@@ -107,7 +143,6 @@ class _BoundedReader:
 
 
 def _source_suffix(filename: str | None) -> str:
-    """Pick a safe filename suffix for the stored source video."""
     if filename:
         suffix = PurePosixPath(filename).suffix.lower()
         if suffix in ALLOWED_VIDEO_SUFFIXES:
@@ -120,22 +155,129 @@ def _utcnow() -> datetime:
 
 
 # ---------------------------------------------------------------------------
-# Router
+# Pipeline subprocess
 # ---------------------------------------------------------------------------
 
 
-router = APIRouter(prefix="/api", dependencies=[Depends(require_api_key)])
+def _run_pipeline_subprocess(source_path: str, work_dir: str) -> dict[str, Any]:
+    """Top-level callable invoked by the ProcessPoolExecutor.
+
+    Must be importable at module scope so it can be pickled across the pool
+    boundary.
+    """
+    from pipeline.orchestrator import make_zip, run_pipeline
+
+    src = Path(source_path)
+    out_dir = Path(work_dir) / "out"
+    deliverables = run_pipeline(src, out_dir, interpolate=True, keep_intermediate=False)
+
+    bundle = Path(work_dir) / "bundle.zip"
+    make_zip(deliverables, bundle)
+
+    duration: float | None = None
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(src),
+            ],
+            capture_output=True, text=True, check=True,
+        )
+        duration = float(probe.stdout.strip())
+    except (subprocess.CalledProcessError, ValueError):
+        duration = None
+
+    return {"bundle_path": str(bundle), "duration_seconds": duration}
 
 
-@router.post(
-    "/jobs",
-    status_code=status.HTTP_201_CREATED,
-    response_model=JobCreated,
-)
+# ---------------------------------------------------------------------------
+# Pipeline runner
+# ---------------------------------------------------------------------------
+
+
+async def _run_pipeline_for_job(
+    job_id: uuid.UUID,
+    source_key: str,
+    storage: Storage,
+) -> None:
+    record = _jobs[job_id]
+    record.status = JobStatus.running
+    record.started_at = _utcnow()
+
+    work_dir = Path(tempfile.mkdtemp(prefix=f"facecap_job_{job_id}_"))
+    suffix = PurePosixPath(source_key).suffix.lower() or ".mp4"
+    source_path = work_dir / f"source{suffix}"
+    bundle_key: str | None = None
+
+    try:
+        await storage.get_file(source_key, source_path)
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            get_executor(),
+            _run_pipeline_subprocess,
+            str(source_path),
+            str(work_dir),
+        )
+
+        bundle_key = f"bundles/{job_id}.zip"
+        await storage.put_file(
+            bundle_key,
+            Path(result["bundle_path"]),
+            content_type="application/zip",
+        )
+
+        record.bundle_key = bundle_key
+        record.source_duration_seconds = result.get("duration_seconds")
+        record.completed_at = _utcnow()
+        record.status = JobStatus.succeeded
+
+        try:
+            await storage.delete(source_key)
+        except Exception:
+            logger.exception("failed to delete source for job %s", job_id)
+
+        logger.info("job %s succeeded", job_id)
+    except asyncio.CancelledError:
+        logger.warning("job %s cancelled mid-flight", job_id)
+        record.status = JobStatus.failed
+        record.error_log = "Job cancelled (service shutdown)."
+        record.completed_at = _utcnow()
+        if bundle_key is not None:
+            try:
+                await storage.delete(bundle_key)
+            except Exception:
+                logger.exception("failed to delete orphan bundle for job %s", job_id)
+        raise
+    except Exception:
+        tb = traceback.format_exc()
+        logger.exception("job %s failed", job_id)
+        record.error_log = tb[:_ERROR_LOG_MAX]
+        record.completed_at = _utcnow()
+        record.status = JobStatus.failed
+        if bundle_key is not None:
+            try:
+                await storage.delete(bundle_key)
+            except Exception:
+                logger.exception("failed to delete partial bundle for job %s", job_id)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+
+router = APIRouter(prefix="/api")
+
+
+@router.post("/jobs", status_code=status.HTTP_201_CREATED, response_model=JobCreated)
 async def create_job(
     settings: Annotated[Settings, Depends(get_settings)],
     storage: Annotated[Storage, Depends(get_storage)],
-    session: Annotated[AsyncSession, Depends(session_dependency)],
     video: Annotated[UploadFile, File(description="Source video (multipart field 'video').")],
     content_length: Annotated[int | None, Header(alias="content-length")] = None,
 ) -> JobCreated:
@@ -175,73 +317,60 @@ async def create_job(
         await storage.delete(source_key)
         raise
 
-    job = Job(
-        id=job_id,
-        status=JobStatus.queued,
-        source_video_key=source_key,
-        pipeline_config={},
-    )
-    session.add(job)
-    try:
-        await session.flush()
-        await session.refresh(job)
-    except Exception:
-        # Row insert failed — drop the uploaded source to avoid an orphan.
-        await storage.delete(source_key)
-        raise
+    now = _utcnow()
+    record = JobRecord(id=job_id, status=JobStatus.queued, created_at=now)
+    _jobs[job_id] = record
 
-    return JobCreated(id=job.id, status=job.status, created_at=job.created_at)
+    asyncio.create_task(
+        _run_pipeline_for_job(job_id, source_key, storage),
+        name=f"job-{job_id}",
+    )
+
+    return JobCreated(id=job_id, status=record.status, created_at=now)
 
 
 @router.get("/jobs/{job_id}", response_model=JobDetail)
-async def get_job(
-    job_id: uuid.UUID,
-    session: Annotated[AsyncSession, Depends(session_dependency)],
-) -> JobDetail:
-    job = await session.get(Job, job_id)
-    if job is None:
+async def get_job(job_id: uuid.UUID) -> JobDetail:
+    record = _jobs.get(job_id)
+    if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Job not found.",
         )
-    return JobDetail.model_validate(job)
+    return JobDetail(
+        id=record.id,
+        status=record.status,
+        created_at=record.created_at,
+        started_at=record.started_at,
+        completed_at=record.completed_at,
+        error_log=record.error_log,
+        source_duration_seconds=record.source_duration_seconds,
+    )
 
 
 @router.get("/jobs/{job_id}/bundle", response_model=BundleDownload)
 async def get_job_bundle(
     job_id: uuid.UUID,
-    session: Annotated[AsyncSession, Depends(session_dependency)],
     storage: Annotated[Storage, Depends(get_storage)],
 ) -> BundleDownload:
-    job = await session.get(Job, job_id)
-    if job is None:
+    record = _jobs.get(job_id)
+    if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Job not found.",
         )
-
-    if job.status != JobStatus.succeeded:
+    if record.status != JobStatus.succeeded:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Bundle not available; job status is {job.status.value}.",
+            detail=f"Bundle not available; job status is {record.status}.",
         )
-
-    if job.bundle_key is None:
-        # Should not happen for a succeeded job; treat as 500 since the worker
-        # contract is to set bundle_key before flipping status.
+    if record.bundle_key is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Job succeeded but no bundle is recorded.",
         )
-
-    if job.expires_at is not None and job.expires_at < _utcnow():
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail="Bundle has expired.",
-        )
-
     url = storage.signed_download_url(
-        job.bundle_key,
+        record.bundle_key,
         expires_in=DOWNLOAD_URL_TTL_SECONDS,
     )
     return BundleDownload(url=url, expires_in=DOWNLOAD_URL_TTL_SECONDS)
