@@ -1,12 +1,29 @@
+/* ------------------------------------------------------------------ *
+ * face-capture design system
+ * Extracted from the aurora-pictures review-tool reference:
+ * near-black studio surface, hairline borders, dense precise type,
+ * monospace for every id/parameter, a single chartreuse accent that
+ * carries active state and the primary action.
+ * ------------------------------------------------------------------ */
+
 :root {
-  --bg: #0f1115;
-  --fg: #e6e8eb;
-  --muted: #8a8f99;
-  --card: #181b22;
-  --border: #262a33;
-  --accent: #6da8ff;
-  --success: #4ec9b0;
-  --failure: #f48771;
+  --bg: #0e0f0e;
+  --surface: #161816;
+  --surface-inset: #1c1e1b;
+  --border: #262826;
+  --border-strong: #353830;
+  --fg: #d8dad6;
+  --fg-dim: #aeb1ab;
+  --muted: #7a7d78;
+  --accent: #9ccc65;
+  --accent-soft: rgba(156, 204, 101, 0.14);
+  --accent-line: rgba(156, 204, 101, 0.55);
+  --failure: #e0825f;
+
+  --font-sans:
+    system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
 * {
@@ -18,149 +35,301 @@ body,
 #root {
   margin: 0;
   padding: 0;
-  height: 100%;
+  min-height: 100%;
   background: var(--bg);
   color: var(--fg);
-  font-family:
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    Roboto,
-    Ubuntu,
-    sans-serif;
-  font-size: 15px;
-  line-height: 1.5;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
 }
 
 .app {
-  max-width: 640px;
+  max-width: 600px;
   margin: 0 auto;
-  padding: 2.5rem 1.5rem 4rem;
+  padding: 4rem 1.5rem 5rem;
 }
 
+/* --- Header ------------------------------------------------------- */
+
 header {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1.25rem;
   margin-bottom: 1.5rem;
 }
 
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+}
+
+.titleline {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
 header h1 {
-  margin: 0 0 0.25rem;
-  font-size: 1.5rem;
-  font-weight: 600;
+  margin: 0;
+  font-size: 1.375rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.tag {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
 }
 
 .sub {
   color: var(--muted);
-  margin: 0;
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
 }
 
-.card {
-  background: var(--card);
+/* --- Dropzone ---------------------------------------------------- */
+
+.dropzone {
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
+  padding: 3rem 1.5rem;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.dropzone:hover,
+.dropzone:focus-visible {
+  border-color: var(--border-strong);
+  outline: none;
+}
+
+.dropzone--over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent-line) inset;
+}
+
+.dropzone__primary {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.dropzone__secondary {
+  margin: 0.35rem 0 1.25rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.dropzone__hint {
+  display: inline-block;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.2rem 0.7rem;
+}
+
+/* --- Panel (state cards) ----------------------------------------- */
+
+.card {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--border-strong);
+  border-radius: 6px;
   padding: 1.25rem 1.5rem;
-  margin-bottom: 1rem;
 }
 
 .card.success {
-  border-color: var(--success);
+  border-left-color: var(--accent);
 }
 
 .card.failure {
-  border-color: var(--failure);
+  border-left-color: var(--failure);
+}
+
+.card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.9rem;
 }
 
 .card h2 {
-  margin: 0 0 0.75rem;
-  font-size: 1.15rem;
+  margin: 0;
+  font-size: 0.8125rem;
   font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
 }
 
-.field {
-  display: block;
-  margin-bottom: 0.75rem;
-}
+/* --- Status pill ------------------------------------------------- */
 
-.field > span {
-  display: block;
-  font-size: 0.85rem;
+.pill {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--border-strong);
   color: var(--muted);
-  margin-bottom: 0.3rem;
+  white-space: nowrap;
 }
 
-input[type="password"],
-input[type="file"] {
-  width: 100%;
-  padding: 0.55rem 0.75rem;
-  background: #0c0e13;
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font: inherit;
+.pill--queued,
+.pill--running {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
 }
 
-input[type="file"] {
-  padding: 0.4rem;
+.pill--succeeded {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.pill--failed {
+  color: var(--failure);
+  border-color: rgba(224, 130, 95, 0.5);
+  background: rgba(224, 130, 95, 0.12);
+}
+
+/* --- Metadata key/value list ------------------------------------- */
+
+.meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1.25rem;
+  margin: 0 0 1rem;
+  font-size: 0.8125rem;
+}
+
+.meta dt {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.meta dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  color: var(--fg-dim);
+  word-break: break-all;
+}
+
+/* --- Buttons ----------------------------------------------------- */
+
+.row {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.25rem;
 }
 
 button {
   appearance: none;
   border: 1px solid var(--accent);
   background: var(--accent);
-  color: #0c0e13;
-  padding: 0.55rem 1rem;
-  border-radius: 6px;
+  color: #10130c;
+  padding: 0.5rem 1rem;
+  border-radius: 5px;
   font: inherit;
-  font-weight: 600;
+  font-size: 0.8125rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
   cursor: pointer;
+  transition:
+    filter 120ms ease,
+    background 120ms ease;
+}
+
+button:hover {
+  filter: brightness(1.08);
 }
 
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 button.ghost {
   background: transparent;
-  color: var(--accent);
+  color: var(--fg-dim);
+  border-color: var(--border-strong);
 }
 
-.row {
-  display: flex;
-  gap: 0.75rem;
-  margin-top: 0.5rem;
+button.ghost:hover {
+  background: var(--surface-inset);
+  filter: none;
 }
+
+/* --- Progress ---------------------------------------------------- */
 
 progress {
   width: 100%;
-  height: 8px;
+  height: 4px;
   appearance: none;
+  margin: 0.25rem 0;
 }
 
 progress::-webkit-progress-bar {
-  background: #0c0e13;
-  border-radius: 4px;
+  background: var(--surface-inset);
+  border-radius: 2px;
 }
 
 progress::-webkit-progress-value {
   background: var(--accent);
-  border-radius: 4px;
+  border-radius: 2px;
 }
 
 progress::-moz-progress-bar {
   background: var(--accent);
-  border-radius: 4px;
+  border-radius: 2px;
 }
+
+/* --- Utility ----------------------------------------------------- */
 
 .muted {
   color: var(--muted);
-  margin: 0.25rem 0;
-  font-size: 0.9rem;
+  margin: 0.3rem 0;
+  font-size: 0.8125rem;
+}
+
+.mono {
+  font-family: var(--font-mono);
 }
 
 code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85rem;
-  background: #0c0e13;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--fg-dim);
+  background: var(--surface-inset);
   padding: 0.05rem 0.35rem;
   border-radius: 3px;
 }
@@ -168,12 +337,31 @@ code {
 .error-log {
   max-height: 240px;
   overflow: auto;
-  background: #0c0e13;
+  margin: 0 0 1rem;
+  background: var(--surface-inset);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 5px;
   padding: 0.75rem;
-  font-size: 0.8rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  color: var(--fg-dim);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* --- Footer / expectations note ---------------------------------- */
+
+.footnote {
+  margin-top: 2rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.footnote strong {
+  color: var(--fg-dim);
+  font-weight: 600;
 }

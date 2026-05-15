@@ -206,11 +206,15 @@ export function App(): React.JSX.Element {
   return (
     <main className="app">
       <header>
-        <h1>face-capture</h1>
+        <p className="eyebrow">monocular video → ARKit-52</p>
+        <div className="titleline">
+          <h1>face-capture</h1>
+          <span className="tag">baseline</span>
+        </div>
         <p className="sub">
           Drop a {REQUIRED_WIDTH}×{REQUIRED_HEIGHT} mp4 (≤
-          {MAX_DURATION_SECONDS}s). Processing runs server-side; the
-          deliverable bundle downloads when it&apos;s ready.
+          {MAX_DURATION_SECONDS}s). Processing runs server-side; a Maya-ready
+          bundle downloads when it&apos;s ready.
         </p>
       </header>
 
@@ -250,8 +254,10 @@ export function App(): React.JSX.Element {
 
       {state.kind === "validating" && (
         <section className="card">
-          <h2>Checking video</h2>
-          <p className="muted">
+          <div className="card__head">
+            <h2>Checking video</h2>
+          </div>
+          <p className="muted mono">
             {state.file.name} · {formatBytes(state.file.size)}
           </p>
         </section>
@@ -259,33 +265,59 @@ export function App(): React.JSX.Element {
 
       {state.kind === "uploading" && (
         <section className="card">
-          <h2>Uploading</h2>
-          <p className="muted">
+          <div className="card__head">
+            <h2>Uploading</h2>
+            <span className="pill pill--running">
+              {Math.round(state.progress * 100)}%
+            </span>
+          </div>
+          <p className="muted mono">
             {state.file.name} · {formatBytes(state.file.size)}
           </p>
           <progress value={state.progress} max={1} />
-          <p className="muted">{Math.round(state.progress * 100)}%</p>
         </section>
       )}
 
       {state.kind === "polling" && (
         <section className="card">
-          <h2>{state.job?.status === "running" ? "Processing" : "Queued"}</h2>
+          <div className="card__head">
+            <h2>
+              {state.job?.status === "running" ? "Processing" : "Queued"}
+            </h2>
+            <span
+              className={`pill pill--${state.job?.status ?? "queued"}`}
+            >
+              {state.job?.status ?? "queued"}
+            </span>
+          </div>
+          <dl className="meta">
+            <dt>job id</dt>
+            <dd>{state.jobId}</dd>
+          </dl>
           <p className="muted">
-            Job id: <code>{state.jobId}</code>
+            Polling every {POLL_INTERVAL_MS / 1000}s — keep this tab open.
           </p>
-          <p className="muted">Polling every {POLL_INTERVAL_MS / 1000}s…</p>
         </section>
       )}
 
       {state.kind === "succeeded" && (
         <section className="card success">
-          <h2>Done</h2>
-          {state.job.source_duration_seconds != null && (
-            <p className="muted">
-              Source duration: {state.job.source_duration_seconds.toFixed(2)}s
-            </p>
-          )}
+          <div className="card__head">
+            <h2>Bundle ready</h2>
+            <span className="pill pill--succeeded">succeeded</span>
+          </div>
+          <dl className="meta">
+            <dt>job id</dt>
+            <dd>{state.job.id}</dd>
+            {state.job.source_duration_seconds != null && (
+              <>
+                <dt>source</dt>
+                <dd>{state.job.source_duration_seconds.toFixed(2)}s</dd>
+              </>
+            )}
+            <dt>contents</dt>
+            <dd>preview.mp4 · blendshapes.csv · apply_in_maya.py · README.txt</dd>
+          </dl>
           <div className="row">
             <button type="button" onClick={() => void handleDownload()}>
               Download bundle
@@ -299,11 +331,14 @@ export function App(): React.JSX.Element {
 
       {state.kind === "failed" && (
         <section className="card failure">
-          <h2>Processing failed</h2>
+          <div className="card__head">
+            <h2>Processing failed</h2>
+            <span className="pill pill--failed">failed</span>
+          </div>
           {state.job.error_log && (
             <pre className="error-log">{state.job.error_log}</pre>
           )}
-          <button type="button" onClick={handleReset}>
+          <button type="button" className="ghost" onClick={handleReset}>
             New video
           </button>
         </section>
@@ -311,13 +346,24 @@ export function App(): React.JSX.Element {
 
       {state.kind === "error" && (
         <section className="card failure">
-          <h2>Error</h2>
-          <p>{state.message}</p>
-          <button type="button" onClick={handleReset}>
+          <div className="card__head">
+            <h2>Error</h2>
+            <span className="pill pill--failed">error</span>
+          </div>
+          <p className="muted">{state.message}</p>
+          <button type="button" className="ghost" onClick={handleReset}>
             Try again
           </button>
         </section>
       )}
+
+      <p className="footnote">
+        <strong>This is a baseline, not finished animation.</strong> The
+        capture is a starting point for an animator to polish — expect brow
+        drift and muted micro-expressions; see the bundled README for the
+        full list. No accounts, no storage: job state is in-memory and
+        bundles auto-expire.
+      </p>
     </main>
   );
 }
