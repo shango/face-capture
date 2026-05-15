@@ -289,6 +289,45 @@ button.ghost:hover {
   filter: none;
 }
 
+/* --- Processing indicator ---------------------------------------- */
+
+.processing {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0 0 0.9rem;
+}
+
+.spinner {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-right-color: var(--accent);
+  animation: spinner-rotate 0.75s linear infinite;
+}
+
+.processing__label {
+  font-size: 0.8125rem;
+  color: var(--fg-dim);
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Honour reduced-motion: keep a slow, gentle turn rather than nothing,
+   so the "still working" signal survives. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
+}
+
 /* --- Progress ---------------------------------------------------- */
 
 progress {

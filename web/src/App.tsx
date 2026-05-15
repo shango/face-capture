@@ -257,6 +257,10 @@ export function App(): React.JSX.Element {
           <div className="card__head">
             <h2>Checking video</h2>
           </div>
+          <div className="processing" role="status" aria-live="polite">
+            <span className="spinner" aria-hidden="true" />
+            <span className="processing__label">Probing resolution and duration…</span>
+          </div>
           <p className="muted mono">
             {state.file.name} · {formatBytes(state.file.size)}
           </p>
@@ -294,6 +298,14 @@ export function App(): React.JSX.Element {
             <dt>job id</dt>
             <dd>{state.jobId}</dd>
           </dl>
+          <div className="processing" role="status" aria-live="polite">
+            <span className="spinner" aria-hidden="true" />
+            <span className="processing__label">
+              {state.job?.status === "running"
+                ? "Running the capture pipeline…"
+                : "Waiting for a worker…"}
+            </span>
+          </div>
           <p className="muted">
             Polling every {POLL_INTERVAL_MS / 1000}s — keep this tab open.
           </p>
@@ -363,9 +375,8 @@ export function App(): React.JSX.Element {
         mesh with ARKit blendshape naming (ReadyPlayerMe, MetaHuman, or an
         in-house ARKit rig). <strong>It&apos;s a baseline, not finished
         animation</strong> — a starting point for an animator to polish, so
-        expect brow drift and muted micro-expressions (full list in the
-        bundled README). No accounts, no storage: job state is in-memory and
-        bundles auto-expire.
+        expect brow drift and muted micro-expressions. No storage: job state
+        is in-memory and bundles auto-expire.
       </p>
     </main>
   );
