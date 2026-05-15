@@ -112,7 +112,9 @@ def resample_csv(input_csv: Path, output_csv: Path, target_fps: float) -> None:
                     row_out.append(f"{v:.6f}")
             writer.writerow(row_out)
 
-    print(f"[resample] {len(rows)} rows ({1/(times[1]-times[0]):.2f} fps) "
+    dt = times[1] - times[0] if len(times) >= 2 else 0.0
+    in_fps = f"{1 / dt:.2f}" if dt > 0 else "?"
+    print(f"[resample] {len(rows)} rows ({in_fps} fps) "
           f"-> {len(out_times)} rows ({target_fps:.2f} fps)")
     print(f"[resample] wrote {output_csv}")
 

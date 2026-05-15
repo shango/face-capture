@@ -55,10 +55,16 @@ def _detect_source_fps(video: Path) -> float:
          "-of", "default=noprint_wrappers=1:nokey=1", str(video)],
         capture_output=True, text=True, check=True,
     ).stdout.strip()
-    if "/" in out:
-        num, den = out.split("/")
-        return float(num) / float(den) if float(den) else 24.0
-    return float(out)
+    try:
+        if "/" in out:
+            num, den = out.split("/", 1)
+            d = float(den)
+            return float(num) / d if d else 24.0
+        return float(out)
+    except (ValueError, ZeroDivisionError):
+        # Malformed/empty ffprobe output (e.g. VFR streams) — fall back
+        # to the nominal source rate rather than aborting the pipeline.
+        return 24.0
 
 
 def _write_apply_script(out_dir: Path, csv_filename: str) -> Path:
@@ -180,7 +186,7 @@ def main():
     with open(csv_path, "r") as f:
         reader = csv.DictReader(f)
         rows = list(reader)
-        header = reader.fieldnames
+        header = reader.fieldnames or []
 
     if not rows:
         cmds.error("CSV is empty.")

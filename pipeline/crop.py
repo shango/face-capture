@@ -164,12 +164,19 @@ def run_ffmpeg_crop(
         "-c:a", "copy",
         str(dst),
     ]
-    # If source has no audio, -c:a copy will fail; try fallback
+    # `-c:a copy` fails when the source has no audio; retry video-only.
+    # Surface the real ffmpeg stderr if the retry also fails, instead
+    # of letting CalledProcessError hide it.
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        # Retry without audio
         cmd_no_audio = [c for c in cmd if c not in ("-c:a", "copy")]
-        subprocess.run(cmd_no_audio, check=True)
+        retry = subprocess.run(cmd_no_audio, capture_output=True, text=True)
+        if retry.returncode != 0:
+            sys.exit(
+                "ffmpeg crop failed.\n"
+                f"--- attempt 1 (with audio) stderr ---\n{result.stderr}"
+                f"--- attempt 2 (no audio) stderr ---\n{retry.stderr}"
+            )
 
 
 def main() -> None:
