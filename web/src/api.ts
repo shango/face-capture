@@ -64,12 +64,12 @@ function asNumber(value: unknown, field: string): number {
 }
 
 function asStringOrNull(value: unknown, field: string): string | null {
-  if (value === null) return null;
+  if (value === null || value === undefined) return null;
   return asString(value, field);
 }
 
 function asNumberOrNull(value: unknown, field: string): number | null {
-  if (value === null) return null;
+  if (value === null || value === undefined) return null;
   return asNumber(value, field);
 }
 

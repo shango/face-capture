@@ -10,9 +10,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": "http://localhost:8000",
-      "/health": "http://localhost:8000",
-      "/storage": "http://localhost:8000",
+      "/api": { target: "http://localhost:8000", changeOrigin: true },
+      "/health": { target: "http://localhost:8000", changeOrigin: true },
+      "/storage": { target: "http://localhost:8000", changeOrigin: true },
     },
   },
   build: {

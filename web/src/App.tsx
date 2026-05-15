@@ -10,6 +10,10 @@ const POLL_INTERVAL_MS = 2000;
 const REQUIRED_WIDTH = 1920;
 const REQUIRED_HEIGHT = 1080;
 const MAX_DURATION_SECONDS = 7;
+// Mirror of the backend `max_upload_bytes` (FR-12). Checked client-side
+// so an oversized file is rejected before the upload starts, not after
+// the server returns 413 mid/post-transfer.
+const MAX_FILE_BYTES = 500 * 1024 * 1024;
 const ALLOWED_MIME = "video/mp4";
 const ALLOWED_EXTENSION = ".mp4";
 
@@ -70,6 +74,9 @@ function validationError(file: File, meta: VideoMeta): string | null {
   ) {
     return "Video must be an .mp4 file.";
   }
+  if (file.size > MAX_FILE_BYTES) {
+    return `File is too large (${formatBytes(file.size)}). Maximum is ${formatBytes(MAX_FILE_BYTES)}.`;
+  }
   return null;
 }
 
@@ -84,19 +91,35 @@ function formatBytes(bytes: number): string {
 export function App(): React.JSX.Element {
   const [state, setState] = useState<AppState>({ kind: "idle" });
   const [dragOver, setDragOver] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Aborts the in-flight XHR upload on reset/unmount so a discarded
+  // upload doesn't keep consuming a server pipeline slot.
+  const uploadControllerRef = useRef<AbortController | null>(null);
+
+  // Only the job id should retrigger the poll loop, not every `state`
+  // object identity change (each poll tick produces a new state object
+  // with the same id).
+  const pollingJobId = state.kind === "polling" ? state.jobId : null;
+
+  // Abort any in-flight upload if the component goes away.
+  useEffect(() => {
+    return () => uploadControllerRef.current?.abort();
+  }, []);
 
   // --- Polling loop ------------------------------------------------------
   useEffect(() => {
-    if (state.kind !== "polling") return;
+    if (pollingJobId === null) return;
 
     const controller = new AbortController();
-    let cancelled = false;
+    // A ref-backed flag so StrictMode's mount→unmount→remount can't
+    // leave a tick from the first run writing state after cleanup.
+    const live = { current: true };
 
     const tick = async (): Promise<void> => {
       try {
-        const job = await fetchJob(state.jobId, controller.signal);
-        if (cancelled) return;
+        const job = await fetchJob(pollingJobId, controller.signal);
+        if (!live.current) return;
         if (TERMINAL_STATUSES.has(job.status)) {
           setState(
             job.status === "succeeded"
@@ -107,12 +130,12 @@ export function App(): React.JSX.Element {
           setState({ kind: "polling", jobId: job.id, job });
         }
       } catch (err: unknown) {
-        if (cancelled) return;
+        if (!live.current) return;
         if (err instanceof HttpError && err.status === 404) {
           setState({
             kind: "error",
             message: "Job no longer exists on the server.",
-            jobId: state.jobId,
+            jobId: pollingJobId,
           });
           return;
         }
@@ -124,12 +147,11 @@ export function App(): React.JSX.Element {
     void tick();
     const interval = window.setInterval(() => void tick(), POLL_INTERVAL_MS);
     return () => {
-      cancelled = true;
+      live.current = false;
       controller.abort();
       window.clearInterval(interval);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.kind === "polling" ? state.jobId : null]);
+  }, [pollingJobId]);
 
   const handleFile = useCallback(async (file: File): Promise<void> => {
     setState({ kind: "validating", file });
@@ -149,12 +171,17 @@ export function App(): React.JSX.Element {
     }
 
     setState({ kind: "uploading", file, progress: 0 });
+    uploadControllerRef.current?.abort();
+    const controller = new AbortController();
+    uploadControllerRef.current = controller;
     try {
       const created = await uploadJob({
         file,
+        signal: controller.signal,
         onProgress: (fraction) =>
           setState({ kind: "uploading", file, progress: fraction }),
       });
+      uploadControllerRef.current = null;
       setState({ kind: "polling", jobId: created.id, job: null });
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (err: unknown) {
@@ -181,9 +208,16 @@ export function App(): React.JSX.Element {
   };
 
   const handleDownload = useCallback(async (): Promise<void> => {
-    if (state.kind !== "succeeded") return;
+    if (state.kind !== "succeeded" || downloading) return;
+    setDownloading(true);
     try {
       const bundle = await fetchBundle(state.job.id);
+      // Only ever navigate to an https URL. The backend builds this via
+      // boto3's presigner so it is always https in practice; this guards
+      // against a javascript:/data: URL if that ever stops being true.
+      if (!/^https:\/\//i.test(bundle.url)) {
+        throw new Error("Server returned an unexpected download URL.");
+      }
       window.location.href = bundle.url;
     } catch (err: unknown) {
       const message =
@@ -193,10 +227,14 @@ export function App(): React.JSX.Element {
             ? err.message
             : "Download failed.";
       setState({ kind: "error", message, jobId: state.job.id });
+    } finally {
+      setDownloading(false);
     }
-  }, [state]);
+  }, [state, downloading]);
 
   const handleReset = (): void => {
+    uploadControllerRef.current?.abort();
+    uploadControllerRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
     setState({ kind: "idle" });
   };
@@ -278,7 +316,11 @@ export function App(): React.JSX.Element {
           <p className="muted mono">
             {state.file.name} · {formatBytes(state.file.size)}
           </p>
-          <progress value={state.progress} max={1} />
+          <progress
+            value={state.progress}
+            max={1}
+            aria-label={`Upload progress: ${Math.round(state.progress * 100)}%`}
+          />
         </section>
       )}
 
@@ -335,8 +377,12 @@ export function App(): React.JSX.Element {
             </dd>
           </dl>
           <div className="row">
-            <button type="button" onClick={() => void handleDownload()}>
-              Download bundle
+            <button
+              type="button"
+              onClick={() => void handleDownload()}
+              disabled={downloading}
+            >
+              {downloading ? "Preparing…" : "Download bundle"}
             </button>
             <button type="button" className="ghost" onClick={handleReset}>
               New video
