@@ -19,6 +19,13 @@ VIDEO="${1:-${VIDEO:-test.mp4}}"
 TIMEOUT="${TIMEOUT:-900}"
 POLL_INTERVAL="${POLL_INTERVAL:-2}"
 
+# Deliverables are named after the uploaded clip; mirror the backend's
+# _safe_clip_stem so we can assert the bundle layout.
+_vbase=$(basename "$VIDEO")
+clip_stem=$(printf '%s' "${_vbase%.*}" \
+  | sed -E 's/[^A-Za-z0-9_-]+/_/g; s/^[_-]+//; s/[_-]+$//')
+[ -z "$clip_stem" ] && clip_stem="clip"
+
 if [ ! -f "$VIDEO" ]; then
   echo "FAIL: video file not found: $VIDEO" >&2
   exit 1
@@ -152,11 +159,11 @@ echo "==> Inspecting bundle"
 contents=$(unzip -Z1 "$zip_path" | sort)
 echo "$contents" | sed 's/^/    /'
 
-required_files="apply_in_maya.py
-apply_in_blender.py
-blendshapes.csv
-preview.mp4
-README.txt"
+required_files="${clip_stem}/${clip_stem}_apply_in_maya.py
+${clip_stem}/${clip_stem}_apply_in_blender.py
+${clip_stem}/${clip_stem}_blendshapes.csv
+${clip_stem}/${clip_stem}_preview.mp4
+${clip_stem}/${clip_stem}_README.txt"
 
 missing=""
 for f in $required_files; do
@@ -170,7 +177,7 @@ if [ -n "$missing" ]; then
 fi
 
 # 7. CSV sanity --------------------------------------------------------------
-unzip -p "$zip_path" blendshapes.csv > "$tmp/blendshapes.csv"
+unzip -p "$zip_path" "${clip_stem}/${clip_stem}_blendshapes.csv" > "$tmp/blendshapes.csv"
 header=$(head -1 "$tmp/blendshapes.csv")
 columns=$(echo "$header" | awk -F',' '{print NF}')
 rows=$(($(wc -l < "$tmp/blendshapes.csv") - 1))

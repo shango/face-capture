@@ -371,8 +371,8 @@ export function App(): React.JSX.Element {
             )}
             <dt>contents</dt>
             <dd>
-              preview.mp4 · blendshapes.csv · apply_in_maya.py ·
-              apply_in_blender.py · README.txt
+              &lt;clip&gt;/ — _preview.mp4 · _blendshapes.csv ·
+              _apply_in_maya.py · _apply_in_blender.py · _README.txt
             </dd>
           </dl>
           <div className="row">

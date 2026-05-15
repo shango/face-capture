@@ -24,6 +24,7 @@ import time
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Protocol
+from urllib.parse import quote
 
 import boto3
 from botocore.client import Config as BotoConfig
@@ -67,7 +68,13 @@ class Storage(Protocol):
 
     async def get_file(self, key: str, dest: Path) -> None: ...
 
-    def signed_download_url(self, key: str, *, expires_in: int = 3600) -> str: ...
+    def signed_download_url(
+        self,
+        key: str,
+        *,
+        expires_in: int = 3600,
+        download_name: str | None = None,
+    ) -> str: ...
 
     async def delete(self, key: str) -> None: ...
 
@@ -184,11 +191,22 @@ class LocalStorage:
 
         await asyncio.to_thread(_copy)
 
-    def signed_download_url(self, key: str, *, expires_in: int = 3600) -> str:
+    def signed_download_url(
+        self,
+        key: str,
+        *,
+        expires_in: int = 3600,
+        download_name: str | None = None,
+    ) -> str:
         _validate_key(key)
         exp = int(time.time()) + expires_in
         sig = self._sign(key, exp)
-        return f"/storage/{key}?exp={exp}&sig={sig}"
+        url = f"/storage/{key}?exp={exp}&sig={sig}"
+        if download_name:
+            # Cosmetic only (sets the saved filename); not part of the
+            # signed payload — fine for the dev-only local backend.
+            url += f"&name={quote(download_name)}"
+        return url
 
     async def delete(self, key: str) -> None:
         target = self._resolve(key)
@@ -301,11 +319,24 @@ class R2Storage:
 
         await asyncio.to_thread(_download)
 
-    def signed_download_url(self, key: str, *, expires_in: int = 3600) -> str:
+    def signed_download_url(
+        self,
+        key: str,
+        *,
+        expires_in: int = 3600,
+        download_name: str | None = None,
+    ) -> str:
         _validate_key(key)
+        params = {"Bucket": self._bucket, "Key": key}
+        if download_name:
+            # Browser saves the object under this name regardless of the
+            # object key. quote() keeps the header value header-safe.
+            params["ResponseContentDisposition"] = (
+                f'attachment; filename="{quote(download_name)}"'
+            )
         return self._client.generate_presigned_url(
             "get_object",
-            Params={"Bucket": self._bucket, "Key": key},
+            Params=params,
             ExpiresIn=expires_in,
         )
 
@@ -359,6 +390,7 @@ def make_local_storage_router(storage: LocalStorage) -> APIRouter:
         key: str,
         exp: int = Query(...),
         sig: str = Query(...),
+        name: str | None = Query(None),
     ) -> FileResponse:
         if not storage.verify_signature(key, exp, sig):
             raise HTTPException(status_code=403, detail="Invalid or expired signature.")
@@ -368,6 +400,10 @@ def make_local_storage_router(storage: LocalStorage) -> APIRouter:
             raise HTTPException(status_code=400, detail="Invalid key.")
         if not path.is_file():
             raise HTTPException(status_code=404, detail="Not found.")
+        # `filename=` makes Starlette emit Content-Disposition: attachment
+        # so the browser saves it as <clip>.zip rather than the job-id key.
+        if name:
+            return FileResponse(path, filename=name)
         return FileResponse(path)
 
     return router

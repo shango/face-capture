@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -67,6 +68,8 @@ class JobRecord:
     error_log: str | None = None
     bundle_key: str | None = None
     source_duration_seconds: float | None = None
+    # Sanitised stem of the uploaded filename; names the bundle/files.
+    clip_stem: str = "clip"
 
 
 _jobs: dict[uuid.UUID, JobRecord] = {}
@@ -156,6 +159,15 @@ def _source_suffix(filename: str | None) -> str:
     return ".mp4"
 
 
+def _safe_clip_stem(filename: str | None) -> str:
+    """Sanitised, extensionless slug of an uploaded filename. Mirrors
+    pipeline.orchestrator._safe_stem (kept local so the web process
+    doesn't import the pipeline package). Idempotent under it."""
+    base = PurePosixPath(filename or "").stem
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", base).strip("_-")[:50].strip("_-")
+    return slug or "clip"
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -171,14 +183,17 @@ def _run_pipeline_subprocess(source_path: str, work_dir: str) -> dict[str, Any]:
     Must be importable at module scope so it can be pickled across the pool
     boundary.
     """
-    from pipeline.orchestrator import make_zip, run_pipeline
+    from pipeline.orchestrator import _safe_stem, make_zip, run_pipeline
 
     src = Path(source_path)
     out_dir = Path(work_dir) / "out"
     deliverables = run_pipeline(src, out_dir, interpolate=True, keep_intermediate=False)
 
+    # Source file is named after the uploaded clip (see
+    # _run_pipeline_for_job), so its stem drives the bundle folder name.
+    stem = _safe_stem(src.stem)
     bundle = Path(work_dir) / "bundle.zip"
-    make_zip(deliverables, bundle)
+    make_zip(deliverables, bundle, root_dir=stem)
 
     duration: float | None = None
     try:
@@ -215,6 +230,7 @@ async def _run_pipeline_for_job(
     job_id: uuid.UUID,
     source_key: str,
     storage: Storage,
+    clip_stem: str,
 ) -> None:
     record = _jobs[job_id]
     record.status = JobStatus.running
@@ -222,7 +238,9 @@ async def _run_pipeline_for_job(
 
     work_dir = Path(tempfile.mkdtemp(prefix=f"facecap_job_{job_id}_"))
     suffix = PurePosixPath(source_key).suffix.lower() or ".mp4"
-    source_path = work_dir / f"source{suffix}"
+    # Name the working source after the uploaded clip so the pipeline's
+    # deliverables (and the bundle folder) are named after it too.
+    source_path = work_dir / f"{clip_stem}{suffix}"
     bundle_key: str | None = None
 
     try:
@@ -334,12 +352,16 @@ async def create_job(
             ) from exc
         raise
 
+    clip_stem = _safe_clip_stem(video.filename)
     now = _utcnow()
-    record = JobRecord(id=job_id, status=JobStatus.queued, created_at=now)
+    record = JobRecord(
+        id=job_id, status=JobStatus.queued, created_at=now,
+        clip_stem=clip_stem,
+    )
     _jobs[job_id] = record
 
     asyncio.create_task(
-        _run_pipeline_for_job(job_id, source_key, storage),
+        _run_pipeline_for_job(job_id, source_key, storage, clip_stem),
         name=f"job-{job_id}",
     )
 
@@ -405,5 +427,6 @@ async def get_job_bundle(
     url = storage.signed_download_url(
         record.bundle_key,
         expires_in=DOWNLOAD_URL_TTL_SECONDS,
+        download_name=f"{record.clip_stem}.zip",
     )
     return BundleDownload(url=url, expires_in=DOWNLOAD_URL_TTL_SECONDS)

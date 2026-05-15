@@ -27,6 +27,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -35,6 +37,20 @@ import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).parent
+
+
+def _safe_stem(name: str) -> str:
+    """Filesystem/zip-safe slug derived from a clip filename stem.
+
+    Callers pass an already-extensionless stem (Path.stem). Keeps only
+    [A-Za-z0-9_-]; collapses any other run (incl. dots/spaces) into
+    "_"; trims separators; caps length. Idempotent. Falls back to
+    "clip" when nothing usable remains.
+    """
+    base = os.path.basename(name or "")
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", base).strip("_-")
+    slug = slug[:50].strip("_-")
+    return slug or "clip"
 
 
 def _run(cmd: list[str], description: str) -> None:
@@ -67,19 +83,25 @@ def _detect_source_fps(video: Path) -> float:
         return 24.0
 
 
-def _write_apply_script(out_dir: Path, csv_filename: str) -> Path:
+def _write_apply_script(
+    out_dir: Path,
+    csv_filename: str,
+    *,
+    script_name: str = "apply_in_maya.py",
+    readme_name: str = "README.txt",
+) -> Path:
     """Write a Maya import script with CSV path baked in for end users."""
-    target = out_dir / "apply_in_maya.py"
+    target = out_dir / script_name
     target.write_text(f'''"""
-apply_in_maya.py - Apply captured facial animation to your ARKit-52 mesh.
+{script_name} - Apply captured facial animation to your ARKit-52 mesh.
 
 USAGE:
 
     1. Open your Maya scene containing the ARKit-rigged head.
     2. Run this script in Maya's Script Editor (Python tab).
 
-If you're not sure how to do step 2, see README.txt in this bundle --
-it walks through opening the Script Editor and running this script
+If you're not sure how to do step 2, see {readme_name} in this bundle
+-- it walks through opening the Script Editor and running this script
 with no scripting experience assumed.
 
 That's it. The script finds every blendShape node in the scene on its
@@ -247,7 +269,7 @@ def main():
     if total_keys == 0:
         cmds.warning("No ARKit-52 targets matched any blendShape node. "
                      "This bundle expects an ARKit-standard rig (ARKit "
-                     "blendshape naming) -- see README.txt.")
+                     "blendshape naming) -- see {readme_name}.")
     print("[apply] done. Set %d keys total." % total_keys)
 
 
@@ -256,23 +278,29 @@ main()
     return target
 
 
-def _write_blender_script(out_dir: Path, csv_filename: str) -> Path:
+def _write_blender_script(
+    out_dir: Path,
+    csv_filename: str,
+    *,
+    script_name: str = "apply_in_blender.py",
+    readme_name: str = "README.txt",
+) -> Path:
     """Write a Blender import script with CSV path baked in for end users.
 
     Parallel to _write_apply_script: auto-detects every mesh with shape
     keys and keys ARKit-52-named shape keys from the CSV. Zero-config.
     """
-    target = out_dir / "apply_in_blender.py"
+    target = out_dir / script_name
     target.write_text(f'''"""
-apply_in_blender.py - Apply captured facial animation to your ARKit-52 mesh.
+{script_name} - Apply captured facial animation to your ARKit-52 mesh.
 
 USAGE:
 
     1. Open your .blend scene containing the ARKit-rigged head.
     2. Run this script in Blender's Scripting workspace.
 
-If you're not sure how to do step 2, see README.txt in this bundle --
-it walks through running this script with no scripting experience
+If you're not sure how to do step 2, see {readme_name} in this bundle
+-- it walks through running this script with no scripting experience
 assumed.
 
 The script finds every mesh that has shape keys, sets the scene fps,
@@ -345,7 +373,7 @@ def _resolve_csv():
     #    Text > Open in the Scripting workspace (the normal flow).
     for txt in bpy.data.texts:
         fp = getattr(txt, "filepath", "")
-        if fp and os.path.basename(fp) == "apply_in_blender.py":
+        if fp and os.path.basename(fp) == {script_name!r}:
             candidates.append(os.path.dirname(bpy.path.abspath(fp)))
     # 4. The .blend file's folder, then the working directory.
     if bpy.data.filepath:
@@ -440,7 +468,7 @@ def main():
     if total_keys == 0:
         print("[apply] WARNING: No ARKit-52 shape keys matched any mesh. "
               "This bundle expects an ARKit-standard rig (ARKit-named "
-              "shape keys) -- see README.txt.")
+              "shape keys) -- see {readme_name}.")
     print("[apply] done. Set %d keys total." % total_keys)
 
 
@@ -450,25 +478,36 @@ main()
 
 
 def _write_readme(out_dir: Path, csv_filename: str,
-                  source_filename: str, n_frames: int) -> Path:
-    target = out_dir / "README.txt"
+                  source_filename: str, n_frames: int,
+                  *,
+                  readme_name: str = "README.txt",
+                  preview_name: str = "preview.mp4",
+                  maya_name: str = "apply_in_maya.py",
+                  blender_name: str = "apply_in_blender.py") -> Path:
+    target = out_dir / readme_name
     target.write_text(f"""Facial Capture Bundle
 =====================
 
 Source:        {source_filename}
 Frames (24fps): {n_frames}
 
+Files are named after your clip so bundles don't get mixed up.
+
 Contents:
-  preview.mp4         - Preview of tracking quality on your source footage.
-                        Mesh overlay shows what was tracked; the bar graph
-                        in the corner shows the captured blendshape values.
+  {preview_name}
+      Preview of tracking quality on your source footage. Mesh overlay
+      shows what was tracked; the corner bar graph shows the captured
+      blendshape values.
 
-  {csv_filename}   - The captured animation data. 24fps, ARKit-52 column
-                        names matching the standard blendshape targets.
+  {csv_filename}
+      The captured animation data. 24fps, ARKit-52 column names
+      matching the standard blendshape targets.
 
-  apply_in_maya.py    - Maya script to apply the CSV to your rig.
+  {maya_name}
+      Maya script to apply the CSV to your rig.
 
-  apply_in_blender.py - Blender script to apply the CSV to your rig.
+  {blender_name}
+      Blender script to apply the CSV to your rig.
 
 Use whichever matches your DCC. Both are zero-config: they auto-detect
 your rig and the CSV path -- no names to look up, no paths to edit.
@@ -489,7 +528,7 @@ How to use in Maya (no scripting experience needed):
   4. Load this script into that Python tab. In the Script Editor's
      own menu:
          File  >  Open Script...
-     then browse to this bundle folder and choose apply_in_maya.py.
+     then browse to this bundle folder and choose {maya_name}.
      The script's text appears in the lower (input) panel.
 
   5. Run it. Either:
@@ -497,7 +536,7 @@ How to use in Maya (no scripting experience needed):
            the Script Editor toolbar, or
          - press Ctrl + Enter   (Cmd + Enter on macOS).
 
-  6. If a file dialog appears asking for blendshapes.csv, pick it
+  6. If a file dialog appears asking for {csv_filename}, pick it
      from this unzipped bundle folder. (It only appears if the script
      couldn't find the CSV automatically -- e.g. you pasted the code
      in rather than opening the file. Picking it once is all it needs.)
@@ -517,7 +556,7 @@ How to use in Blender (no scripting experience needed):
      workspace. A text editor and a Python console appear.
 
   3. In the text editor's header, click "Open" (folder icon), browse
-     to this bundle folder, and choose apply_in_blender.py.
+     to this bundle folder, and choose {blender_name}.
 
   4. Run it. Either:
          - click the "Run Script" button (the ▶ play icon in the
@@ -541,7 +580,7 @@ Notes:
     keys named differently on your rig are skipped; if nothing matches
     anywhere, the script warns you (this bundle expects an
     ARKit-standard rig).
-  - The script locates blendshapes.csv on its own. If it can't, Maya
+  - The script locates {csv_filename} on its own. If it can't, Maya
     pops a one-time file picker; Blender prints a clear message. As a
     last resort, set CSV_PATH at the top of the script to the CSV's
     full path.
@@ -615,8 +654,15 @@ def run_pipeline(
             f"smooth (min_cutoff={min_cutoff})"
         )
 
+        # Deliverables are named after the source clip so the user can
+        # tell bundles apart (e.g. shot42_preview.mp4).
+        stem = _safe_stem(source_video.stem)
+        maya_name = f"{stem}_apply_in_maya.py"
+        blender_name = f"{stem}_apply_in_blender.py"
+        readme_name = f"{stem}_README.txt"
+
         # Step 5: resample to source fps for delivery
-        out_csv_name = "blendshapes.csv"
+        out_csv_name = f"{stem}_blendshapes.csv"
         blendshapes_out = out_dir / out_csv_name
         _run(
             [sys.executable, str(HERE / "resample.py"),
@@ -627,7 +673,7 @@ def run_pipeline(
         )
 
         # Step 6: preview overlay against the original source
-        preview_out = out_dir / "preview.mp4"
+        preview_out = out_dir / f"{stem}_preview.mp4"
         _run(
             [sys.executable, str(HERE / "preview_overlay.py"),
              str(source_video), str(blendshapes_out),
@@ -636,8 +682,14 @@ def run_pipeline(
         )
 
         # Step 7: write apply scripts and README
-        apply_script = _write_apply_script(out_dir, out_csv_name)
-        blender_script = _write_blender_script(out_dir, out_csv_name)
+        apply_script = _write_apply_script(
+            out_dir, out_csv_name,
+            script_name=maya_name, readme_name=readme_name,
+        )
+        blender_script = _write_blender_script(
+            out_dir, out_csv_name,
+            script_name=blender_name, readme_name=readme_name,
+        )
 
         # Count output frames for README
         import csv as csvmod
@@ -645,7 +697,9 @@ def run_pipeline(
             n_frames = sum(1 for _ in csvmod.reader(f)) - 1
 
         readme = _write_readme(
-            out_dir, out_csv_name, source_video.name, n_frames
+            out_dir, out_csv_name, source_video.name, n_frames,
+            readme_name=readme_name, preview_name=preview_out.name,
+            maya_name=maya_name, blender_name=blender_name,
         )
 
         print("\n[pipeline] DELIVERABLES:")
@@ -668,11 +722,17 @@ def run_pipeline(
             print(f"\n[pipeline] intermediate kept at: {work_dir}")
 
 
-def make_zip(deliverables: dict, zip_path: Path) -> Path:
+def make_zip(
+    deliverables: dict, zip_path: Path, *, root_dir: str | None = None
+) -> Path:
+    """Zip the deliverables. If root_dir is given, the files are placed
+    under a single top-level folder of that name, so unzipping yields a
+    tidy `<clip>/` directory rather than loose files."""
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for key, path in deliverables.items():
-            zf.write(path, arcname=path.name)
+            arcname = f"{root_dir}/{path.name}" if root_dir else path.name
+            zf.write(path, arcname=arcname)
     print(f"[pipeline] zipped -> {zip_path}")
     return zip_path
 
@@ -698,8 +758,9 @@ def main() -> None:
     )
 
     if args.zip:
-        zip_path = args.output.parent / f"{args.output.name}.zip"
-        make_zip(deliverables, zip_path)
+        stem = _safe_stem(args.video.stem)
+        zip_path = args.output.parent / f"{stem}.zip"
+        make_zip(deliverables, zip_path, root_dir=stem)
 
 
 if __name__ == "__main__":

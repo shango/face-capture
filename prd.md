@@ -179,7 +179,7 @@ This product is explicitly *not* for:
   - Common gotchas and how to handle them
 
 #### FR-10: Bundle assembly
-- Final deliverable: directory containing the five files (preview.mp4, blendshapes.csv, apply_in_maya.py, apply_in_blender.py, README.txt)
+- Final deliverable: a `<clip>/` directory (named after the uploaded clip) containing the five files, each prefixed with the clip name: `<clip>_preview.mp4`, `<clip>_blendshapes.csv`, `<clip>_apply_in_maya.py`, `<clip>_apply_in_blender.py`, `<clip>_README.txt`. The downloaded zip is `<clip>.zip`.
 - Optional zip packaging
 
 ### 4.2 Hosted service (v2, simplified)
