@@ -67,27 +67,23 @@ def _write_apply_script(out_dir: Path, csv_filename: str) -> Path:
     target.write_text(f'''"""
 apply_in_maya.py - Apply captured facial animation to your ARKit-52 mesh.
 
-USAGE (run from inside Maya's Script Editor, Python tab):
+USAGE:
 
     1. Open your Maya scene containing the ARKit-rigged head.
+    2. Run this script in Maya's Script Editor (Python tab).
 
-    2. Set Maya's scene fps to match the data (24fps):
-           import maya.cmds as cmds
-           cmds.currentUnit(time='film')
+If you're not sure how to do step 2, see README.txt in this bundle --
+it walks through opening the Script Editor and running this script
+with no scripting experience assumed.
 
-    3. Update BLENDSHAPE_NODES below if your blendShape nodes are not named
-       as defaults. Run this script:
-           import maya.cmds as cmds
-           print(cmds.ls(type='blendShape'))
-       to discover the names.
+That's it. The script finds every blendShape node in the scene on its
+own, sets the scene fps, and keys the captured weights onto matching
+ARKit-named targets. The CSV path is already baked in (it lives next to
+this script). No discovery commands and no editing are required.
 
-    4. Update CSV_PATH below to point to where you unzipped this bundle.
-
-    5. Run this script.
-
-The script keys blendshape weights from the CSV onto matching ARKit-named
-targets on each blendShape node. Columns that don't match a target on a
-given node are skipped silently.
+Columns that don't match a target on a given node are skipped silently.
+If nothing matches anywhere, the script says so loudly -- this bundle
+expects an ARKit-standard rig.
 """
 
 import csv
@@ -101,19 +97,12 @@ import maya.cmds as cmds
 # Change if you moved the CSV elsewhere.
 CSV_PATH = os.path.join(os.path.dirname(__file__), {csv_filename!r})
 
-# One or more blendShape node names. Run cmds.ls(type='blendShape') in
-# Maya to discover them. For a typical ARKit FBX rig with split meshes
-# (head/eyes/teeth) you'll have several. The script handles unmatched
-# columns per-node gracefully.
-BLENDSHAPE_NODES = [
-    "blendShape1",
-    # Add more here if your rig has additional blendShape nodes,
-    # e.g. for eye and teeth meshes:
-    # "Mesh_ncl1_1",
-    # "MeshFBXASC046001_ncl1_1",
-    # "MeshFBXASC046002_ncl1_1",
-    # "MeshFBXASC046003_ncl1_1",
-]
+# Leave this EMPTY to auto-detect every blendShape node in the scene
+# (the normal case -- handles split ARKit rigs with head/eyes/teeth
+# nodes automatically). Only fill it in to restrict application to
+# specific nodes in an unusual scene, e.g.:
+#     BLENDSHAPE_NODES = ["head_blendShape", "eyes_blendShape"]
+BLENDSHAPE_NODES = []  # type: list
 
 # Set fps to match the CSV; 24 is the source rate.
 SCENE_FPS = "film"  # 'film'=24, 'pal'=25, 'ntsc'=30, 'show'=48, 'palf'=50, 'ntscf'=60
@@ -169,8 +158,16 @@ def main():
     cmds.playbackOptions(min=0, max=last_frame,
                          animationStartTime=0, animationEndTime=last_frame)
 
+    nodes = BLENDSHAPE_NODES or (cmds.ls(type="blendShape") or [])
+    if not nodes:
+        cmds.error("No blendShape nodes found in the scene. Open your "
+                   "ARKit-rigged scene before running this script.")
+        return
+    print("[apply] applying to %d blendShape node(s): %s"
+          % (len(nodes), ", ".join(nodes)))
+
     total_keys = 0
-    for node_name in BLENDSHAPE_NODES:
+    for node_name in nodes:
         if not cmds.objExists(node_name):
             print("[apply] WARNING: node not found, skipping: %s" % node_name)
             continue
@@ -203,6 +200,10 @@ def main():
                                  outTangentType="linear")
                 total_keys += 1
 
+    if total_keys == 0:
+        cmds.warning("No ARKit-52 targets matched any blendShape node. "
+                     "This bundle expects an ARKit-standard rig (ARKit "
+                     "blendshape naming) -- see README.txt.")
     print("[apply] done. Set %d keys total." % total_keys)
 
 
@@ -230,21 +231,47 @@ Contents:
 
   apply_in_maya.py    - Maya script to apply the CSV to your rig.
 
-How to use in Maya:
-  1. Open your scene with the ARKit-rigged head mesh.
-  2. In Maya's Script Editor, find your blendShape node name(s):
-         import maya.cmds as cmds
-         print(cmds.ls(type="blendShape"))
-  3. Edit BLENDSHAPE_NODES in apply_in_maya.py to match those name(s).
-  4. Drop the script into Maya's Script Editor and run.
+How to use in Maya (no scripting experience needed):
+  1. Open your Maya scene containing the ARKit-rigged head mesh.
+
+  2. Open the Script Editor. In Maya's top menu bar:
+         Windows  >  General Editors  >  Script Editor
+     (You can also click the {{;}} icon at the bottom-right of the
+     Maya window.)
+
+  3. In the Script Editor window, click the tab labelled "Python".
+     This matters -- there is also a "MEL" tab, and this script is
+     Python. If you only see one input area, use the Script Editor
+     menu: Command > (make sure Python is selected).
+
+  4. Load this script into that Python tab. In the Script Editor's
+     own menu:
+         File  >  Open Script...
+     then browse to this bundle folder and choose apply_in_maya.py.
+     The script's text appears in the lower (input) panel.
+
+  5. Run it. Either:
+         - click "Execute All" -- the double blue arrow button on
+           the Script Editor toolbar, or
+         - press Ctrl + Enter   (Cmd + Enter on macOS).
+
+  6. Watch the upper (output) panel. The script prints progress and
+     finishes with a line like:
+         [apply] done. Set 12345 keys total.
+     Press play on the timeline to see the animation.
+
+No node names to look up, no file paths to edit -- the script finds
+everything on its own.
 
 Notes:
-  - Scene fps will be set to 24 by the script (matches the source).
-  - If your rig has multiple blendShape nodes (e.g. head + eyes + teeth),
-    add each one to BLENDSHAPE_NODES. The script handles per-node target
-    matching automatically.
-  - The CSV uses standard ARKit-52 names. Targets named differently
-    on your rig will be skipped with a warning.
+  - The script auto-detects every blendShape node in the scene, so split
+    ARKit rigs (head + eyes + teeth) are handled with no extra steps.
+  - Scene fps is set to 24 by the script (matches the source).
+  - The CSV uses standard ARKit-52 names. Targets named differently on
+    your rig are skipped; if nothing matches anywhere, the script warns
+    you (this bundle expects an ARKit-standard rig).
+  - Unusual scene? Set BLENDSHAPE_NODES in apply_in_maya.py to restrict
+    application to specific nodes.
 """)
     return target
 
