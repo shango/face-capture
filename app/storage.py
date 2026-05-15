@@ -235,15 +235,23 @@ class R2Storage:
             )
 
         self._bucket: str = settings.r2_bucket  # type: ignore[assignment]
-        # Force S3v4 signing — required by R2 — and disable boto's checksum
-        # header injection that R2 rejects on PUT.
+        # Force S3v4 signing — required by R2 — and disable boto's default
+        # checksum header injection. boto3 >= 1.36 defaults to sending
+        # x-amz-checksum-* / x-amz-sdk-checksum-* headers, which Cloudflare
+        # R2 rejects with HTTP 400 on PUT. "when_required" suppresses them
+        # unless the operation explicitly needs a checksum.
         self._client = boto3.client(
             "s3",
             endpoint_url=settings.r2_endpoint_url,
             aws_access_key_id=settings.r2_access_key_id,
             aws_secret_access_key=settings.r2_secret_access_key,
             region_name=settings.r2_region,
-            config=BotoConfig(signature_version="s3v4", retries={"max_attempts": 3}),
+            config=BotoConfig(
+                signature_version="s3v4",
+                retries={"max_attempts": 3},
+                request_checksum_calculation="when_required",
+                response_checksum_validation="when_required",
+            ),
         )
 
     async def put_stream(

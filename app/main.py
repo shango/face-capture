@@ -77,12 +77,22 @@ def create_app() -> FastAPI:
         async def spa_index() -> FileResponse:
             return FileResponse(dist / "index.html")
 
+        dist_root = dist.resolve()
+
         @app.get("/{full_path:path}", include_in_schema=False)
         async def spa_catch_all(full_path: str) -> FileResponse:
-            candidate = dist / full_path
-            if candidate.is_file():
-                return FileResponse(candidate)
-            return FileResponse(dist / "index.html")
+            index = dist_root / "index.html"
+            # Contain the resolved path under dist_root: a request like
+            # `/../../etc/passwd` (or %2e%2e-encoded) must not escape the
+            # build directory. Fall back to the SPA shell otherwise.
+            candidate = (dist_root / full_path).resolve()
+            if (
+                candidate == dist_root
+                or dist_root not in candidate.parents
+                or not candidate.is_file()
+            ):
+                return FileResponse(index)
+            return FileResponse(candidate)
 
     return app
 

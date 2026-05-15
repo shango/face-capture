@@ -133,11 +133,17 @@ class _BoundedReader:
         self._source = source
         self._limit = limit
         self._read = 0
+        # boto3's upload_fileobj catches exceptions from read() and may
+        # re-wrap them (e.g. S3UploadFailedError), so `except
+        # _UploadTooLarge` at the call site is not reliable. This flag
+        # is checked directly after the upload fails.
+        self.exceeded = False
 
     def read(self, n: int = -1) -> bytes:
         chunk = self._source.read(n)
         self._read += len(chunk)
         if self._read > self._limit:
+            self.exceeded = True
             raise _UploadTooLarge()
         return chunk
 
@@ -197,6 +203,14 @@ def _run_pipeline_subprocess(source_path: str, work_dir: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+async def _delete_quietly(storage: Storage, key: str, job_id: uuid.UUID) -> None:
+    """Best-effort delete; never raises (used on cleanup paths)."""
+    try:
+        await storage.delete(key)
+    except Exception:
+        logger.exception("failed to delete %s for job %s", key, job_id)
+
+
 async def _run_pipeline_for_job(
     job_id: uuid.UUID,
     source_key: str,
@@ -250,6 +264,7 @@ async def _run_pipeline_for_job(
                 await storage.delete(bundle_key)
             except Exception:
                 logger.exception("failed to delete orphan bundle for job %s", job_id)
+        await _delete_quietly(storage, source_key, job_id)
         raise
     except Exception:
         tb = traceback.format_exc()
@@ -262,6 +277,7 @@ async def _run_pipeline_for_job(
                 await storage.delete(bundle_key)
             except Exception:
                 logger.exception("failed to delete partial bundle for job %s", job_id)
+        await _delete_quietly(storage, source_key, job_id)
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
@@ -307,14 +323,15 @@ async def create_job(
             bounded,
             content_type=content_type or "application/octet-stream",
         )
-    except _UploadTooLarge:
+    except Exception as exc:
         await storage.delete(source_key)
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Upload exceeds {settings.max_upload_bytes} bytes.",
-        )
-    except Exception:
-        await storage.delete(source_key)
+        # Either the raw exception, or — if boto3 swallowed/wrapped it —
+        # the reader's own flag tells us the client exceeded the limit.
+        if isinstance(exc, _UploadTooLarge) or bounded.exceeded:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Upload exceeds {settings.max_upload_bytes} bytes.",
+            ) from exc
         raise
 
     now = _utcnow()
