@@ -358,10 +358,13 @@ export function App(): React.JSX.Element {
       )}
 
       <p className="footnote">
-        <strong>This is a baseline, not finished animation.</strong> The
-        capture is a starting point for an animator to polish — expect brow
-        drift and muted micro-expressions; see the bundled README for the
-        full list. No accounts, no storage: job state is in-memory and
+        <strong>Built for ARKit-standard rigs.</strong> The bundle is
+        ARKit-52 blendshape data plus a Maya apply script, intended for a
+        mesh with ARKit blendshape naming (ReadyPlayerMe, MetaHuman, or an
+        in-house ARKit rig). <strong>It&apos;s a baseline, not finished
+        animation</strong> — a starting point for an animator to polish, so
+        expect brow drift and muted micro-expressions (full list in the
+        bundled README). No accounts, no storage: job state is in-memory and
         bundles auto-expire.
       </p>
     </main>
