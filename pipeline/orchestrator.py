@@ -78,8 +78,10 @@ with no scripting experience assumed.
 
 That's it. The script finds every blendShape node in the scene on its
 own, sets the scene fps, and keys the captured weights onto matching
-ARKit-named targets. The CSV path is already baked in (it lives next to
-this script). No discovery commands and no editing are required.
+ARKit-named targets. It also locates the CSV automatically; if it
+can't (e.g. you pasted this into the console rather than opening the
+file), a dialog asks you to pick blendshapes.csv from the unzipped
+bundle once. No discovery commands and no editing are required.
 
 Columns that don't match a target on a given node are skipped silently.
 If nothing matches anywhere, the script says so loudly -- this bundle
@@ -93,9 +95,12 @@ import maya.cmds as cmds
 
 # ---- USER CONFIG ------------------------------------------------------
 
-# Path to the CSV file (in the same folder as this script by default).
-# Change if you moved the CSV elsewhere.
-CSV_PATH = os.path.join(os.path.dirname(__file__), {csv_filename!r})
+# The CSV ships next to this script and is found automatically. You
+# only need to set CSV_PATH if you want to point at a CSV elsewhere;
+# otherwise leave it as "" and the script locates {csv_filename!r}
+# (it sits beside this file, or it will ask you to pick it).
+CSV_NAME = {csv_filename!r}
+CSV_PATH = ""
 
 # Leave this EMPTY to auto-detect every blendShape node in the scene
 # (the normal case -- handles split ARKit rigs with head/eyes/teeth
@@ -128,9 +133,41 @@ def _list_aliases(node):
     return result
 
 
+def _resolve_csv():
+    # 1. Explicit override wins.
+    if CSV_PATH and os.path.isfile(CSV_PATH):
+        return CSV_PATH
+    # 2. Next to this script -- works when run as a saved file
+    #    (File > Open Script... then Execute, or execfile).
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        cand = os.path.join(here, CSV_NAME)
+        if os.path.isfile(cand):
+            return cand
+    except NameError:
+        # __file__ is undefined when the script is pasted into the
+        # Script Editor and run from the console -- fall through.
+        pass
+    # 3. Current working directory.
+    cand = os.path.abspath(CSV_NAME)
+    if os.path.isfile(cand):
+        return cand
+    # 4. Ask the user to locate it -- always works, however the
+    #    script was launched.
+    sel = cmds.fileDialog2(
+        fileMode=1, dialogStyle=2,
+        caption="Select %s from the unzipped bundle" % CSV_NAME,
+        fileFilter="CSV files (*.csv);;All files (*.*)")
+    if sel:
+        return sel[0]
+    return None
+
+
 def main():
-    if not os.path.isfile(CSV_PATH):
-        cmds.error("CSV not found: %s" % CSV_PATH)
+    csv_path = _resolve_csv()
+    if not csv_path:
+        cmds.error("Could not locate %s. Set CSV_PATH at the top of "
+                   "this script to its full path." % CSV_NAME)
         return
 
     # Set scene fps
@@ -139,7 +176,8 @@ def main():
                 "show": 48, "palf": 50, "ntscf": 60}}
     fps = fps_map.get(SCENE_FPS, 24)
 
-    with open(CSV_PATH, "r") as f:
+    print("[apply] using CSV: %s" % csv_path)
+    with open(csv_path, "r") as f:
         reader = csv.DictReader(f)
         rows = list(reader)
         header = reader.fieldnames
@@ -212,6 +250,199 @@ main()
     return target
 
 
+def _write_blender_script(out_dir: Path, csv_filename: str) -> Path:
+    """Write a Blender import script with CSV path baked in for end users.
+
+    Parallel to _write_apply_script: auto-detects every mesh with shape
+    keys and keys ARKit-52-named shape keys from the CSV. Zero-config.
+    """
+    target = out_dir / "apply_in_blender.py"
+    target.write_text(f'''"""
+apply_in_blender.py - Apply captured facial animation to your ARKit-52 mesh.
+
+USAGE:
+
+    1. Open your .blend scene containing the ARKit-rigged head.
+    2. Run this script in Blender's Scripting workspace.
+
+If you're not sure how to do step 2, see README.txt in this bundle --
+it walks through running this script with no scripting experience
+assumed.
+
+The script finds every mesh that has shape keys, sets the scene fps,
+and keys the captured weights onto shape keys whose names match the
+ARKit-52 columns. Shape keys that don't match are left untouched. If
+nothing matches anywhere, the script reports it loudly -- this bundle
+expects an ARKit-standard rig (ARKit-named shape keys).
+"""
+
+import csv
+import os
+import bpy
+
+
+# ---- USER CONFIG ------------------------------------------------------
+
+# The CSV ships next to this script and is found automatically. Only
+# set CSV_PATH if you want to point at a CSV elsewhere; otherwise
+# leave it "" and the script locates {csv_filename!r} on its own.
+CSV_NAME = {csv_filename!r}
+CSV_PATH = ""
+
+# Leave this EMPTY to auto-detect every mesh in the scene that has
+# shape keys (the normal case -- handles split ARKit rigs with
+# head/eyes/teeth meshes automatically). Only fill it in to restrict
+# application to specific objects in an unusual scene, e.g.:
+#     MESH_OBJECTS = ["Face", "Eyes"]
+MESH_OBJECTS = []  # type: list
+
+# Frame rate the data was delivered at (24 is the source rate).
+DATA_FPS = 24
+
+# Erase any existing animation on matched shape keys before re-keying.
+CLEAR_EXISTING = True
+
+# ---- END USER CONFIG --------------------------------------------------
+
+
+NON_TARGET_COLS = ("frame", "time_seconds", "detected",
+                   "head_yaw", "head_pitch", "head_roll",
+                   "head_tx", "head_ty", "head_tz")
+
+
+def _mesh_objects():
+    if MESH_OBJECTS:
+        objs = []
+        for nm in MESH_OBJECTS:
+            o = bpy.data.objects.get(nm)
+            if o is None:
+                print("[apply] WARNING: object not found, skipping: %s" % nm)
+            else:
+                objs.append(o)
+        return objs
+    return [o for o in bpy.data.objects
+            if o.type == "MESH" and o.data.shape_keys]
+
+
+def _resolve_csv():
+    # 1. Explicit override wins.
+    if CSV_PATH and os.path.isfile(CSV_PATH):
+        return CSV_PATH
+    candidates = []
+    # 2. Next to this script, when run as a file (blender --python).
+    try:
+        candidates.append(os.path.dirname(os.path.abspath(__file__)))
+    except NameError:
+        # __file__ is undefined when run from the Text Editor.
+        pass
+    # 3. Folder of this script's text datablock, when opened via
+    #    Text > Open in the Scripting workspace (the normal flow).
+    for txt in bpy.data.texts:
+        fp = getattr(txt, "filepath", "")
+        if fp and os.path.basename(fp) == "apply_in_blender.py":
+            candidates.append(os.path.dirname(bpy.path.abspath(fp)))
+    # 4. The .blend file's folder, then the working directory.
+    if bpy.data.filepath:
+        candidates.append(os.path.dirname(bpy.data.filepath))
+    candidates.append(os.getcwd())
+    for d in candidates:
+        cand = os.path.join(d, CSV_NAME)
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def main():
+    csv_path = _resolve_csv()
+    if not csv_path:
+        raise RuntimeError(
+            "Could not locate %s. Open it via Text > Open in the "
+            "Scripting workspace, or set CSV_PATH at the top of this "
+            "script to its full path." % CSV_NAME)
+
+    scene = bpy.context.scene
+    scene.render.fps = DATA_FPS
+    scene.render.fps_base = 1.0
+    fps = DATA_FPS
+
+    print("[apply] using CSV: %s" % csv_path)
+    with open(csv_path, "r") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        header = reader.fieldnames or []
+
+    if not rows:
+        raise RuntimeError("CSV is empty.")
+
+    target_cols = [c for c in header if c not in NON_TARGET_COLS]
+    print("[apply] %d data columns in CSV" % len(target_cols))
+    print("[apply] %d frames" % len(rows))
+
+    objs = _mesh_objects()
+    if not objs:
+        raise RuntimeError(
+            "No meshes with shape keys found in the scene. Open your "
+            "ARKit-rigged scene before running this script.")
+    print("[apply] applying to %d mesh object(s): %s"
+          % (len(objs), ", ".join(o.name for o in objs)))
+
+    last_t = float(rows[-1]["time_seconds"])
+    last_frame = int(round(last_t * fps))
+    scene.frame_start = 0
+    scene.frame_end = last_frame
+
+    total_keys = 0
+    for obj in objs:
+        key_blocks = obj.data.shape_keys.key_blocks
+        matched = [c for c in target_cols if c in key_blocks]
+        print("[apply] %s: matched %d/%d shape keys"
+              % (obj.name, len(matched), len(key_blocks)))
+
+        if CLEAR_EXISTING:
+            adata = obj.data.shape_keys.animation_data
+            if adata and adata.action:
+                for fc in list(adata.action.fcurves):
+                    dp = fc.data_path
+                    if dp.endswith(".value") and any(
+                            ('["%s"]' % m) in dp for m in matched):
+                        adata.action.fcurves.remove(fc)
+
+        for row in rows:
+            try:
+                t = float(row["time_seconds"])
+            except (ValueError, KeyError):
+                continue
+            frame = int(round(t * fps))
+            for name in matched:
+                try:
+                    v = float(row[name])
+                except ValueError:
+                    v = 0.0
+                kb = key_blocks[name]
+                kb.value = v
+                kb.keyframe_insert(data_path="value", frame=frame)
+                total_keys += 1
+
+    # Linear interpolation, matching the Maya script's linear tangents.
+    for obj in objs:
+        adata = obj.data.shape_keys.animation_data
+        if adata and adata.action:
+            for fc in adata.action.fcurves:
+                for kp in fc.keyframe_points:
+                    kp.interpolation = "LINEAR"
+
+    if total_keys == 0:
+        print("[apply] WARNING: No ARKit-52 shape keys matched any mesh. "
+              "This bundle expects an ARKit-standard rig (ARKit-named "
+              "shape keys) -- see README.txt.")
+    print("[apply] done. Set %d keys total." % total_keys)
+
+
+main()
+''')
+    return target
+
+
 def _write_readme(out_dir: Path, csv_filename: str,
                   source_filename: str, n_frames: int) -> Path:
     target = out_dir / "README.txt"
@@ -230,6 +461,11 @@ Contents:
                         names matching the standard blendshape targets.
 
   apply_in_maya.py    - Maya script to apply the CSV to your rig.
+
+  apply_in_blender.py - Blender script to apply the CSV to your rig.
+
+Use whichever matches your DCC. Both are zero-config: they auto-detect
+your rig and the CSV path -- no names to look up, no paths to edit.
 
 How to use in Maya (no scripting experience needed):
   1. Open your Maya scene containing the ARKit-rigged head mesh.
@@ -255,7 +491,12 @@ How to use in Maya (no scripting experience needed):
            the Script Editor toolbar, or
          - press Ctrl + Enter   (Cmd + Enter on macOS).
 
-  6. Watch the upper (output) panel. The script prints progress and
+  6. If a file dialog appears asking for blendshapes.csv, pick it
+     from this unzipped bundle folder. (It only appears if the script
+     couldn't find the CSV automatically -- e.g. you pasted the code
+     in rather than opening the file. Picking it once is all it needs.)
+
+  7. Watch the upper (output) panel. The script prints progress and
      finishes with a line like:
          [apply] done. Set 12345 keys total.
      Press play on the timeline to see the animation.
@@ -263,15 +504,43 @@ How to use in Maya (no scripting experience needed):
 No node names to look up, no file paths to edit -- the script finds
 everything on its own.
 
+How to use in Blender (no scripting experience needed):
+  1. Open your .blend scene containing the ARKit-rigged head mesh.
+
+  2. At the top of the Blender window, click the "Scripting" tab/
+     workspace. A text editor and a Python console appear.
+
+  3. In the text editor's header, click "Open" (folder icon), browse
+     to this bundle folder, and choose apply_in_blender.py.
+
+  4. Run it. Either:
+         - click the "Run Script" button (the ▶ play icon in the
+           text editor header), or
+         - hover the mouse over the text editor and press Alt + P.
+
+  5. Open the System Console / Toggle System Console (Window menu, on
+     Windows) or the terminal Blender was launched from to see the
+     progress lines, ending with:
+         [apply] done. Set 12345 keys total.
+     Press play on the timeline to see the animation.
+
+Same as the Maya script: nothing to look up or edit.
+
 Notes:
-  - The script auto-detects every blendShape node in the scene, so split
-    ARKit rigs (head + eyes + teeth) are handled with no extra steps.
+  - Both scripts auto-detect the rig. Maya: every blendShape node in
+    the scene. Blender: every mesh that has shape keys. Split ARKit
+    rigs (head + eyes + teeth) are handled with no extra steps.
   - Scene fps is set to 24 by the script (matches the source).
-  - The CSV uses standard ARKit-52 names. Targets named differently on
-    your rig are skipped; if nothing matches anywhere, the script warns
-    you (this bundle expects an ARKit-standard rig).
-  - Unusual scene? Set BLENDSHAPE_NODES in apply_in_maya.py to restrict
-    application to specific nodes.
+  - The CSV uses standard ARKit-52 names. Maya targets / Blender shape
+    keys named differently on your rig are skipped; if nothing matches
+    anywhere, the script warns you (this bundle expects an
+    ARKit-standard rig).
+  - The script locates blendshapes.csv on its own. If it can't, Maya
+    pops a one-time file picker; Blender prints a clear message. As a
+    last resort, set CSV_PATH at the top of the script to the CSV's
+    full path.
+  - Unusual scene? Set BLENDSHAPE_NODES (Maya) or MESH_OBJECTS
+    (Blender) to restrict application to specific nodes/objects.
 """)
     return target
 
@@ -360,8 +629,9 @@ def run_pipeline(
             "render preview overlay"
         )
 
-        # Step 7: write apply_in_maya.py and README
+        # Step 7: write apply scripts and README
         apply_script = _write_apply_script(out_dir, out_csv_name)
+        blender_script = _write_blender_script(out_dir, out_csv_name)
 
         # Count output frames for README
         import csv as csvmod
@@ -373,13 +643,15 @@ def run_pipeline(
         )
 
         print("\n[pipeline] DELIVERABLES:")
-        for p in [preview_out, blendshapes_out, apply_script, readme]:
+        for p in [preview_out, blendshapes_out, apply_script,
+                  blender_script, readme]:
             print(f"  {p}")
 
         return {
             "preview": preview_out,
             "csv": blendshapes_out,
             "apply_script": apply_script,
+            "blender_script": blender_script,
             "readme": readme,
         }
     finally:
