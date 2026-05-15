@@ -73,9 +73,14 @@ def create_app() -> FastAPI:
                 name="assets",
             )
 
+        # index.html must never be cached: it points at content-hashed
+        # asset filenames, so a stale shell keeps loading old JS/CSS
+        # after a deploy. The hashed assets themselves are immutable.
+        _INDEX_HEADERS = {"Cache-Control": "no-cache, must-revalidate"}
+
         @app.get("/", include_in_schema=False)
         async def spa_index() -> FileResponse:
-            return FileResponse(dist / "index.html")
+            return FileResponse(dist / "index.html", headers=_INDEX_HEADERS)
 
         dist_root = dist.resolve()
 
@@ -91,7 +96,7 @@ def create_app() -> FastAPI:
                 or dist_root not in candidate.parents
                 or not candidate.is_file()
             ):
-                return FileResponse(index)
+                return FileResponse(index, headers=_INDEX_HEADERS)
             return FileResponse(candidate)
 
     return app

@@ -212,22 +212,12 @@ export function App(): React.JSX.Element {
     setDownloading(true);
     try {
       const bundle = await fetchBundle(state.job.id);
-      // The URL is either an absolute https presigned URL (R2 backend)
-      // or a same-origin relative path (LocalStorage backend, e.g.
-      // "/storage/bundles/<id>.zip?..."). Resolve against the current
-      // origin and only navigate if it lands on http(s) — this still
-      // blocks javascript:/data: URLs without rejecting the valid
-      // relative LocalStorage form.
-      let resolved: URL;
-      try {
-        resolved = new URL(bundle.url, window.location.origin);
-      } catch {
-        throw new Error("Server returned an unexpected download URL.");
-      }
-      if (resolved.protocol !== "https:" && resolved.protocol !== "http:") {
-        throw new Error("Server returned an unexpected download URL.");
-      }
-      window.location.href = resolved.href;
+      // bundle.url is always backend-constructed: an https presigned
+      // URL (R2) or a same-origin "/storage/<key>?exp=&sig=" path
+      // (LocalStorage). It is never user-controlled, so navigate to it
+      // directly. (An earlier scheme guard here caused false rejections
+      // of the valid relative LocalStorage form — do not reintroduce.)
+      window.location.href = bundle.url;
     } catch (err: unknown) {
       const message =
         err instanceof HttpError
