@@ -9,7 +9,7 @@ const POLL_INTERVAL_MS = 2000;
 // rejects anything else before bytes hit the network.
 const REQUIRED_WIDTH = 1920;
 const REQUIRED_HEIGHT = 1080;
-const MAX_DURATION_SECONDS = 5;
+const MAX_DURATION_SECONDS = 7;
 const ALLOWED_MIME = "video/mp4";
 const ALLOWED_EXTENSION = ".mp4";
 
@@ -208,7 +208,7 @@ export function App(): React.JSX.Element {
       <header>
         <p className="eyebrow">monocular video → ARKit-52</p>
         <div className="titleline">
-          <h1>face-capture</h1>
+          <h1>FaceCap</h1>
           <span className="tag">baseline</span>
         </div>
         <p className="sub">
