@@ -329,7 +329,10 @@ export function App(): React.JSX.Element {
               </>
             )}
             <dt>contents</dt>
-            <dd>preview.mp4 · blendshapes.csv · apply_in_maya.py · README.txt</dd>
+            <dd>
+              preview.mp4 · blendshapes.csv · apply_in_maya.py ·
+              apply_in_blender.py · README.txt
+            </dd>
           </dl>
           <div className="row">
             <button type="button" onClick={() => void handleDownload()}>

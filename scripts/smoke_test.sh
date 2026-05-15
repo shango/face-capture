@@ -153,6 +153,7 @@ contents=$(unzip -Z1 "$zip_path" | sort)
 echo "$contents" | sed 's/^/    /'
 
 required_files="apply_in_maya.py
+apply_in_blender.py
 blendshapes.csv
 preview.mp4
 README.txt"
