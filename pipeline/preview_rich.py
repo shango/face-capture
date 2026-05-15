@@ -50,7 +50,7 @@ except ImportError:
 
 
 # Drawing colors (BGR).
-COLOR_TESSELATION = (255, 255, 255)  # white face mesh
+COLOR_TESSELATION = (180, 180, 180)  # light grey face mesh
 COLOR_CONTOURS = (200, 200, 200)
 COLOR_LIPS = (40, 90, 220)        # orange-red
 COLOR_LEFT_EYE = (220, 180, 40)   # cyan-ish
