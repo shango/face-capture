@@ -372,9 +372,13 @@ async def get_job_bundle(
 ) -> BundleDownload:
     record = _jobs.get(job_id)
     if record is None:
+        # Job state is in-memory; a service restart drops it (PRD §5.3).
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Job not found.",
+            detail=(
+                "This job is no longer available (the server was "
+                "restarted). Please upload your video again."
+            ),
         )
     if record.status != JobStatus.succeeded:
         raise HTTPException(
@@ -385,6 +389,18 @@ async def get_job_bundle(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Job succeeded but no bundle is recorded.",
+        )
+    # The bundle object may have aged out of storage (R2 lifecycle /
+    # local TTL) even though the in-memory record survives. Verify it
+    # exists so the user gets a clean in-app error instead of being
+    # redirected to a raw storage 404 page.
+    if not await storage.exists(record.bundle_key):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=(
+                "This bundle has expired and is no longer available. "
+                "Please upload your video again."
+            ),
         )
     url = storage.signed_download_url(
         record.bundle_key,
