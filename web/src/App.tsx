@@ -307,7 +307,8 @@ export function App(): React.JSX.Element {
             </span>
           </div>
           <p className="muted">
-            Polling every {POLL_INTERVAL_MS / 1000}s — keep this tab open.
+            This can take 5 minutes or more. Polling every{" "}
+            {POLL_INTERVAL_MS / 1000}s — keep this tab open.
           </p>
         </section>
       )}
