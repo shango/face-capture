@@ -9,7 +9,7 @@
 
 ## 1. Summary
 
-A facial animation capture pipeline that converts standard monocular video into ARKit-52 blendshape animation data, deliverable as a Maya-ready package. Built for small VFX studios working with ARKit-standard rigs, with a focus on:
+A facial animation capture pipeline that converts standard monocular video into ARKit-52 blendshape animation data, deliverable as a Maya- or Blender-ready package. Built for small VFX studios working with ARKit-standard rigs, with a focus on:
 
 - Open-source / free tooling only
 - CPU-only operation (no GPU dependency)
@@ -43,7 +43,7 @@ Convert existing monocular video footage into:
 
 1. A blendshape animation CSV using ARKit's standard 52-target naming
 2. A preview video showing tracking quality
-3. A Maya script that applies the animation to a user's rig
+3. Maya and Blender scripts that apply the animation to a user's rig
 
 Without requiring:
 - GPU compute
@@ -154,18 +154,23 @@ This product is explicitly *not* for:
 - Status line: frame number, processing rate, face detection status
 - Output: MP4 matching source resolution and frame rate
 
-#### FR-8: Maya application script generation
-- Per-job generated Python script
+#### FR-8: Maya & Blender application script generation
+- Per-job generated Python scripts: `apply_in_maya.py` and
+  `apply_in_blender.py` (user picks whichever matches their DCC)
 - CSV path pre-baked (relative to script location by default)
-- Zero-config by default: auto-detects every blendShape node in the scene
-  (`cmds.ls(type='blendShape')`) — no node names to look up or edit
-- Optional `BLENDSHAPE_NODES` override in `USER CONFIG` to restrict
-  application to specific nodes in unusual scenes
-- Auto-detect target aliases on each blendShape node
-- Handle multiple blendShape nodes (for split ARKit rigs: head + eyes + teeth)
+- Zero-config by default — no names to look up or edit:
+  - Maya: auto-detects every blendShape node (`cmds.ls(type='blendShape')`)
+  - Blender: auto-detects every mesh with shape keys
+- Optional override in `USER CONFIG` to restrict application to specific
+  nodes/objects in unusual scenes (`BLENDSHAPE_NODES` / `MESH_OBJECTS`)
+- Auto-detect target aliases (Maya) / shape-key names (Blender)
+- Handle split ARKit rigs (head + eyes + teeth) across multiple nodes/meshes
 - Skip unmatched columns gracefully; warn loudly if nothing matches anywhere
   (signals a non-ARKit rig)
-- Clear existing animation on matched attributes before re-keying (configurable)
+- Clear existing animation on matched attributes/shape keys before re-keying
+  (configurable)
+- Both scripts emit identical `[apply]` progress lines and use linear
+  interpolation for parity
 
 #### FR-9: User-facing documentation
 - README.txt generated per job with:
@@ -174,7 +179,7 @@ This product is explicitly *not* for:
   - Common gotchas and how to handle them
 
 #### FR-10: Bundle assembly
-- Final deliverable: directory containing the four files (preview.mp4, blendshapes.csv, apply_in_maya.py, README.txt)
+- Final deliverable: directory containing the five files (preview.mp4, blendshapes.csv, apply_in_maya.py, apply_in_blender.py, README.txt)
 - Optional zip packaging
 
 ### 4.2 Hosted service (v2, simplified)
@@ -333,6 +338,7 @@ Queue-time targets are no longer meaningful — with a single in-process worker 
 │  bundle assembly │  • preview.mp4
 │                  │  • blendshapes.csv (24fps)
 │                  │  • apply_in_maya.py (CSV path baked)
+│                  │  • apply_in_blender.py (CSV path baked)
 │                  │  • README.txt
 └──────────────────┘
 ```
@@ -390,6 +396,7 @@ No Postgres. No worker queue. No auth layer. No cleanup task. The service starts
 | `preview_overlay.py` | Pipeline step | Python + OpenCV + MediaPipe | Complete |
 | `orchestrator.py` | Pipeline driver | Python | Complete |
 | `apply_in_maya.py` | User artifact | Python (Maya) | Generated per job |
+| `apply_in_blender.py` | User artifact | Python (Blender `bpy`) | Generated per job |
 | `interp.py` | Optional step | Python + RIFE/ffmpeg | Complete (RIFE optional) |
 | `retarget.py` | Auxiliary CLI | Python | Complete (not in v1/v2 path) |
 | `app/main.py` + `app/jobs.py` | Hosted web layer | Python + FastAPI | Complete (v2) |
@@ -438,14 +445,16 @@ wget <face_landmarker.task URL>
 python -m pipeline.orchestrator source.mp4 -o ./jobs/myjob --zip
 ```
 
-**Apply in Maya:**
+**Apply in Maya or Blender:**
 1. Unzip bundle if zipped
-2. Open Maya scene with ARKit-rigged head
-3. Run `apply_in_maya.py` in Maya's Script Editor
+2. Open the scene with the ARKit-rigged head
+3. Run the script for your DCC:
+   - Maya: `apply_in_maya.py` in the Script Editor (Python tab)
+   - Blender: `apply_in_blender.py` in the Scripting workspace
 
-The script auto-detects all blendShape nodes and the baked CSV path —
-no node lookup or editing required. (Optional: set `BLENDSHAPE_NODES`
-to restrict to specific nodes in an unusual scene.)
+Both scripts auto-detect the rig and the baked CSV path — no lookup or
+editing required. (Optional override: `BLENDSHAPE_NODES` / `MESH_OBJECTS`
+to restrict to specific nodes/objects in an unusual scene.)
 
 ### 7.2 Hosted service (v2)
 
@@ -477,10 +486,10 @@ A v1 release is acceptable when:
 
 - [ ] `python -m pipeline.orchestrator test.mp4 -o ./jobs/smoketest --no-interpolate` completes in <60s on a modest laptop
 - [ ] Same with interpolation completes in <10 min on the same hardware
-- [ ] Output bundle contains exactly the four expected files
+- [ ] Output bundle contains exactly the five expected files
 - [ ] CSV opens cleanly in a spreadsheet; all 52 ARKit columns present; no NaN values
 - [ ] Preview MP4 plays cleanly; mesh overlay tracks face on most frames
-- [ ] Apply script runs in Maya without errors on a standard ARKit-named rig
+- [ ] Apply script runs without errors on a standard ARKit-named rig — Maya (`apply_in_maya.py`) and Blender (`apply_in_blender.py`)
 - [ ] Animator review (with at least one real animator) confirms output is "usable as a baseline"
 
 ### 8.2 Acceptance criteria for v2 (hosted)
