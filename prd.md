@@ -1,8 +1,8 @@
 # Product Requirements Document: Facial Capture Pipeline
 
-**Version:** 1.1
-**Status:** Reflects the v2 simplification pass (2026-05-14). v2 ships as a public, no-auth, no-DB single-service web app with strict input constraints.
-**Last updated:** 2026-05-14
+**Version:** 1.2
+**Status:** Reflects the v2 simplification pass (2026-05-14). v2 ships as a public, no-auth, no-DB single-service web app with strict input constraints. v1.2 raises the hosted max clip duration from 5s to 7s.
+**Last updated:** 2026-05-15
 **Owner:** Shannon Gold
 
 ---
@@ -20,7 +20,7 @@ A facial animation capture pipeline that converts standard monocular video into 
 The pipeline ships in two forms:
 
 - **v1 local CLI** — the pipeline as a collection of Python scripts. Permissive about input format.
-- **v2 hosted web app** — a single Railway service that serves a public dropzone page. No accounts, no database, strict input subset (1920×1080, ≤5s, .mp4). Distributed to a small known audience (~50 users) by URL.
+- **v2 hosted web app** — a single Railway service that serves a public dropzone page. No accounts, no database, strict input subset (1920×1080, ≤7s, .mp4). Distributed to a small known audience (~50 users) by URL.
 
 ---
 
@@ -157,10 +157,14 @@ This product is explicitly *not* for:
 #### FR-8: Maya application script generation
 - Per-job generated Python script
 - CSV path pre-baked (relative to script location by default)
-- Clear `USER CONFIG` section for blendShape node names and fps
+- Zero-config by default: auto-detects every blendShape node in the scene
+  (`cmds.ls(type='blendShape')`) — no node names to look up or edit
+- Optional `BLENDSHAPE_NODES` override in `USER CONFIG` to restrict
+  application to specific nodes in unusual scenes
 - Auto-detect target aliases on each blendShape node
 - Handle multiple blendShape nodes (for split ARKit rigs: head + eyes + teeth)
-- Skip unmatched columns gracefully with warnings
+- Skip unmatched columns gracefully; warn loudly if nothing matches anywhere
+  (signals a non-ARKit rig)
 - Clear existing animation on matched attributes before re-keying (configurable)
 
 #### FR-9: User-facing documentation
@@ -189,7 +193,7 @@ The hosted product accepts a deliberately narrow input subset:
 | Constraint | Value | Enforcement |
 |---|---|---|
 | Resolution | exactly **1920 × 1080** | Client probes video metadata; rejects others. |
-| Duration | **≤ 5 seconds** | Client probes duration; rejects longer clips. |
+| Duration | **≤ 7 seconds** | Client probes duration; rejects longer clips. |
 | Container | **.mp4** only | Client checks `File.type` / extension. |
 | Max file size | 500 MB | Client check + backend `MAX_UPLOAD_BYTES`. |
 
@@ -238,7 +242,9 @@ If any of these become needed, they constitute a v3 scope expansion and would re
 |---|---|---|
 | Local: full pipeline w/ interpolation, 5s clip | <5 min | <10 min |
 | Local: full pipeline w/o interpolation, 5s clip | <30 sec | <60 sec |
-| Hosted: end-to-end including upload/download, 5s clip | <7 min | <15 min |
+| Hosted: end-to-end including upload/download, 7s clip | <7 min | <15 min |
+
+The local rows benchmark a 5s clip (the v1 CLI's standard regression clip, unchanged). The hosted row now benchmarks the new 7s ceiling. **The hosted target/limit numbers above were calibrated at 5s; a 7s clip is ~40% more frames and proportionally more compute. Re-measure end-to-end at 7s and revise these figures before treating them as committed targets.**
 
 Queue-time targets are no longer meaningful — with a single in-process worker and 50 occasional users, concurrent jobs are rare. The page surfaces queued state honestly when it happens.
 
@@ -249,7 +255,7 @@ Queue-time targets are no longer meaningful — with a single in-process worker 
 **Quality bar (v1) is not:** "Client-ready final pixel" — visible solver artifacts (forehead/brow drift, muted small expressions) are expected. The polish step is the animator's responsibility.
 
 **Concretely measurable:**
-- Face detection rate across 5s clip: ≥98%
+- Face detection rate across a 7s clip: ≥98%
 - Major blendshape responsiveness: jawOpen, mouthSmileLeft/Right, eyeBlinkLeft/Right should each reach >0.7 when the performer clearly executes that expression
 - Lipsync timing accuracy: blendshape onsets should land within 2 frames (at 24fps) of audio events
 
@@ -337,7 +343,7 @@ Queue-time targets are no longer meaningful — with a single in-process worker 
 ┌─────────────────────────────────────────┐
 │  Browser (the user's 50-friend audience)│
 │                                         │
-│  Drops a 1920×1080 ≤5s .mp4 onto        │
+│  Drops a 1920×1080 ≤7s .mp4 onto        │
 │  the dropzone. Client validates and     │
 │  rejects locally if invalid.            │
 └────────────────┬────────────────────────┘
@@ -435,16 +441,18 @@ python -m pipeline.orchestrator source.mp4 -o ./jobs/myjob --zip
 **Apply in Maya:**
 1. Unzip bundle if zipped
 2. Open Maya scene with ARKit-rigged head
-3. Find blendShape node names via `cmds.ls(type='blendShape')`
-4. Edit `BLENDSHAPE_NODES = [...]` in `apply_in_maya.py`
-5. Run the script in Maya's Script Editor
+3. Run `apply_in_maya.py` in Maya's Script Editor
+
+The script auto-detects all blendShape nodes and the baked CSV path —
+no node lookup or editing required. (Optional: set `BLENDSHAPE_NODES`
+to restrict to specific nodes in an unusual scene.)
 
 ### 7.2 Hosted service (v2)
 
 **Submit a job:**
 1. User loads the public URL.
 2. Drag-and-drops a `.mp4` onto the dropzone (or clicks to pick a file).
-3. The page probes the video's resolution and duration. If anything fails the 1920×1080 / ≤5s / .mp4 check, the page shows a clear error and never starts the upload.
+3. The page probes the video's resolution and duration. If anything fails the 1920×1080 / ≤7s / .mp4 check, the page shows a clear error and never starts the upload.
 4. If valid, the file is `POST`ed to `/api/jobs` (multipart). The server streams to R2, creates an in-memory job record, and returns `{ id, status: "queued" }`.
 5. The page transitions to a status view and polls `/api/jobs/{id}` every 2s.
 
@@ -528,7 +536,7 @@ These should be visible in `README.txt` as "Known limitations of this pipeline t
 
 ### 9.2 v2.x (hosted polish, if demand justifies)
 
-- **Wider input acceptance:** relax the strict 1920×1080 / ≤5s constraints once the pipeline proves robust to variation in the hosted environment.
+- **Wider input acceptance:** relax the strict 1920×1080 / ≤7s constraints once the pipeline proves robust to variation in the hosted environment.
 - **In-browser preview viewer:** play the resulting preview.mp4 inline before download.
 - **Drag-multiple, queue-locally:** still single job at a time on the server, but the page lets the user line up several clips and submit them sequentially.
 - **Client-side resolution downscale:** for users who shoot 4K, offer browser-side ffmpeg.wasm transcoding rather than rejection.
@@ -566,7 +574,7 @@ These would be different products built on different premises.
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | MediaPipe quality is insufficient for any real use case | Medium | High | Validate with one real animator on real clips before further investment |
-| ffmpeg minterpolate is too slow for hosted CPU constraints | Low | Medium | Already known to take ~3 min for 5s clip; documented in performance targets |
+| ffmpeg minterpolate is too slow for hosted CPU constraints | Low → Medium | Medium | ~3 min for a 5s clip (measured); a 7s clip scales to ~4+ min, eating more of the <7 min hosted target. Re-measure at 7s — see §5.1 calibration note. |
 | Maya rig variation breaks apply script | Medium | Medium | Apply script handles multi-node ARKit splits; document common rig types |
 | MediaPipe API changes in future versions | Low | Low | Pin version range in requirements.txt |
 | Railway service restart kills in-flight job | Medium | Low | Acknowledged in §5.3; user re-uploads. R2 bundles aren't lost; only the dict entry is. |
