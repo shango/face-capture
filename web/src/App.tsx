@@ -212,13 +212,22 @@ export function App(): React.JSX.Element {
     setDownloading(true);
     try {
       const bundle = await fetchBundle(state.job.id);
-      // Only ever navigate to an https URL. The backend builds this via
-      // boto3's presigner so it is always https in practice; this guards
-      // against a javascript:/data: URL if that ever stops being true.
-      if (!/^https:\/\//i.test(bundle.url)) {
+      // The URL is either an absolute https presigned URL (R2 backend)
+      // or a same-origin relative path (LocalStorage backend, e.g.
+      // "/storage/bundles/<id>.zip?..."). Resolve against the current
+      // origin and only navigate if it lands on http(s) — this still
+      // blocks javascript:/data: URLs without rejecting the valid
+      // relative LocalStorage form.
+      let resolved: URL;
+      try {
+        resolved = new URL(bundle.url, window.location.origin);
+      } catch {
         throw new Error("Server returned an unexpected download URL.");
       }
-      window.location.href = bundle.url;
+      if (resolved.protocol !== "https:" && resolved.protocol !== "http:") {
+        throw new Error("Server returned an unexpected download URL.");
+      }
+      window.location.href = resolved.href;
     } catch (err: unknown) {
       const message =
         err instanceof HttpError
