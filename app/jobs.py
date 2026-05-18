@@ -75,6 +75,33 @@ class JobRecord:
 _jobs: dict[uuid.UUID, JobRecord] = {}
 _executor: ProcessPoolExecutor | None = None
 
+# asyncio.create_task only yields a weak reference from the event loop, so a
+# fire-and-forget pipeline task can be garbage-collected mid-flight. Holding
+# a strong reference until the task completes prevents that.
+_background_tasks: set[asyncio.Task[None]] = set()
+
+# Job state is in-memory and never queried after a restart (PRD §5.3), but a
+# long-lived process must not accumulate records unboundedly — each carries up
+# to _ERROR_LOG_MAX bytes of traceback. Once the cap is exceeded, the oldest
+# finished (succeeded/failed) records are dropped; in-flight ones are kept.
+_MAX_JOB_RECORDS = 500
+
+
+def _remember_job(record: JobRecord) -> None:
+    _jobs[record.id] = record
+    if len(_jobs) <= _MAX_JOB_RECORDS:
+        return
+    finished = sorted(
+        (
+            r
+            for r in _jobs.values()
+            if r.status in (JobStatus.succeeded, JobStatus.failed)
+        ),
+        key=lambda r: r.completed_at or r.created_at,
+    )
+    for stale in finished[: len(_jobs) - _MAX_JOB_RECORDS]:
+        _jobs.pop(stale.id, None)
+
 
 def get_executor() -> ProcessPoolExecutor:
     global _executor
@@ -358,12 +385,14 @@ async def create_job(
         id=job_id, status=JobStatus.queued, created_at=now,
         clip_stem=clip_stem,
     )
-    _jobs[job_id] = record
+    _remember_job(record)
 
-    asyncio.create_task(
+    task = asyncio.create_task(
         _run_pipeline_for_job(job_id, source_key, storage, clip_stem),
         name=f"job-{job_id}",
     )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
     return JobCreated(id=job_id, status=record.status, created_at=now)
 
