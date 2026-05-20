@@ -2,12 +2,19 @@
 pipeline.py - End-to-end pipeline orchestrator.
 
 Takes a source video and produces the user delivery bundle:
-    preview.mp4         (mesh overlay on 24fps source)
-    blendshapes.csv     (24fps ARKit-52, ready for Maya import)
-    apply_in_maya.py    (the Maya import script, with CSV path baked in)
-    README.txt          (usage instructions)
+    <stem>_preview.mp4       (mesh overlay on the original source)
+    <stem>_blendshapes.csv   (resampled ARKit-52, ready for any rig)
+    <stem>_apply_in_maya.py  (Maya import script, CSV path baked in)
+    <stem>_apply_in_blender.py (Blender import script, CSV path baked in)
+    <stem>_README.txt        (usage instructions)
 
-All four files are written into a single output directory (or zipped if
+  If pipeline/assets/arkit_head.usdc is present (one-off Maya export
+  via scripts/export_arkit_head_to_usd.py), two extra files are added:
+    <stem>_arkit_head.usdc   (static neutral head with blendshape targets)
+    <stem>_animated.usda     (head + per-frame blendshape weights from CSV)
+  Open the .usda in any USD-capable DCC to scrub the animation directly.
+
+All files are written into a single output directory (or zipped if
 --zip is passed). Intermediate files are kept in a temp dir and cleaned
 up unless --keep-intermediate is set.
 
@@ -483,7 +490,42 @@ def _write_readme(out_dir: Path, csv_filename: str,
                   readme_name: str = "README.txt",
                   preview_name: str = "preview.mp4",
                   maya_name: str = "apply_in_maya.py",
-                  blender_name: str = "apply_in_blender.py") -> Path:
+                  blender_name: str = "apply_in_blender.py",
+                  usd_head_name: str | None = None,
+                  usd_animated_name: str | None = None) -> Path:
+    # USD outputs are optional — only included if the one-off Maya export
+    # has been done. README sections are toggled off when absent so the
+    # bundle docs stay accurate for whatever shipped.
+    has_usd = usd_head_name is not None and usd_animated_name is not None
+    usd_contents = (f"""
+  {usd_head_name}
+      Static neutral ARKit head mesh (USD binary). Contains the 51
+      blendshape targets the animation drives.
+
+  {usd_animated_name}
+      The same head with this clip's animation already baked on. Open
+      it in any USD-capable DCC (Maya 2022+, Blender 3.5+, Houdini,
+      Omniverse, Unreal Sequencer) and press play. Must stay in the
+      same folder as {usd_head_name} -- it sublayers it by relative
+      path."""
+                    if has_usd else "")
+    usd_quickplay = (f"""
+
+Quick play (USD, no scripting):
+  1. Unzip this bundle.
+  2. Drag {usd_animated_name} into your DCC -- or File > Open it.
+       Maya 2022+      : USD stage opens in the viewport.
+       Blender 3.5+    : File > Import > Universal Scene Description.
+       Houdini         : File > Open, or a SOP-level usdimport.
+       Omniverse       : double-click in the Content browser.
+       Unreal Engine 5 : Content Browser > Import, or drop into a
+                         level via the USD Stage panel.
+  3. Press play on the timeline. The animation is baked in.
+
+  Note: {usd_animated_name} *references* {usd_head_name} by relative
+  path, so keep both files in the same folder. Moving just the .usda
+  will load an empty stage."""
+                     if has_usd else "")
     target = out_dir / readme_name
     target.write_text(f"""Facial Capture Bundle
 =====================
@@ -507,10 +549,12 @@ Contents:
       Maya script to apply the CSV to your rig.
 
   {blender_name}
-      Blender script to apply the CSV to your rig.
+      Blender script to apply the CSV to your rig.{usd_contents}
 
-Use whichever matches your DCC. Both are zero-config: they auto-detect
-your rig and the CSV path -- no names to look up, no paths to edit.
+Use whichever matches your DCC. Both scripts are zero-config: they
+auto-detect your rig and the CSV path -- no names to look up, no paths
+to edit.{(" Or, if your DCC supports USD, just open " + (usd_animated_name or "")
++ " for an instant playback of the supplied ARKit head.") if has_usd else ""}{usd_quickplay}
 
 How to use in Maya (no scripting experience needed):
   1. Open your Maya scene containing the ARKit-rigged head mesh.
@@ -696,24 +740,85 @@ def run_pipeline(
         with blendshapes_out.open() as f:
             n_frames = sum(1 for _ in csvmod.reader(f)) - 1
 
+        # Step 8: USD bundle assets (skipped silently if the one-off Maya
+        # export hasn't been run yet — see scripts/export_arkit_head_to_usd.py).
+        # Both files are best-effort: a malformed asset must not lose the
+        # user the CSV + apply scripts they actually came for.
+        head_src = HERE / "assets" / "arkit_head.usdc"
+        head_usd_dest: Path | None = None
+        animated_usd: Path | None = None
+        if head_src.is_file():
+            try:
+                # Support both package import (`from pipeline.orchestrator
+                # import run_pipeline`, the web-service path) and direct
+                # script invocation (`python pipeline/orchestrator.py`,
+                # where there's no parent package).
+                try:
+                    from .usd_export import bake_animated_usd
+                except ImportError:
+                    from usd_export import bake_animated_usd  # type: ignore
+                head_usd_dest = out_dir / f"{stem}_arkit_head.usdc"
+                shutil.copy2(head_src, head_usd_dest)
+                animated_usd = out_dir / f"{stem}_animated.usda"
+                bake = bake_animated_usd(
+                    blendshapes_out, head_usd_dest, animated_usd, fps=source_fps,
+                )
+                print(
+                    f"[pipeline] USD: {animated_usd.name} "
+                    f"({bake.frame_count} frames, "
+                    f"{len(bake.matched_columns)} matched / "
+                    f"{len(bake.unmatched_columns)} unmatched)"
+                )
+            except Exception as exc:
+                # Don't fail the job over a USD problem; CSV + scripts are
+                # the primary deliverables. Surface in logs and move on.
+                print(f"[pipeline] WARNING: USD bake skipped: {exc}",
+                      file=sys.stderr)
+                if animated_usd and animated_usd.exists():
+                    animated_usd.unlink()
+                if head_usd_dest and head_usd_dest.exists():
+                    head_usd_dest.unlink()
+                head_usd_dest = None
+                animated_usd = None
+        else:
+            print(
+                f"[pipeline] note: {head_src.name} not found in "
+                f"pipeline/assets/ — skipping USD bake. Run "
+                "scripts/export_arkit_head_to_usd.py to enable."
+            )
+
+        # README is written last so it can list whichever USD files actually
+        # made it into the bundle.
         readme = _write_readme(
             out_dir, out_csv_name, source_video.name, n_frames,
             readme_name=readme_name, preview_name=preview_out.name,
             maya_name=maya_name, blender_name=blender_name,
+            usd_head_name=head_usd_dest.name if head_usd_dest else None,
+            usd_animated_name=animated_usd.name if animated_usd else None,
         )
 
         print("\n[pipeline] DELIVERABLES:")
-        for p in [preview_out, blendshapes_out, apply_script,
-                  blender_script, readme]:
+        emitted = [preview_out, blendshapes_out, apply_script,
+                   blender_script, readme]
+        if head_usd_dest is not None:
+            emitted.append(head_usd_dest)
+        if animated_usd is not None:
+            emitted.append(animated_usd)
+        for p in emitted:
             print(f"  {p}")
 
-        return {
+        result: dict = {
             "preview": preview_out,
             "csv": blendshapes_out,
             "apply_script": apply_script,
             "blender_script": blender_script,
             "readme": readme,
         }
+        if head_usd_dest is not None:
+            result["head_usd"] = head_usd_dest
+        if animated_usd is not None:
+            result["animated_usd"] = animated_usd
+        return result
     finally:
         if not keep_intermediate:
             shutil.rmtree(work_dir, ignore_errors=True)

@@ -176,6 +176,40 @@ if [ -n "$missing" ]; then
   exit 1
 fi
 
+# 6b. USD bundle assets (optional — skipped if the one-off Maya export has
+#     not been run yet, see scripts/export_arkit_head_to_usd.py). When the
+#     asset is present on the server, the bundle MUST contain both files
+#     and the animated .usda MUST open as a USD stage.
+usd_head="${clip_stem}/${clip_stem}_arkit_head.usdc"
+usd_animated="${clip_stem}/${clip_stem}_animated.usda"
+have_head=$(echo "$contents" | grep -cx "$usd_head" || true)
+have_animated=$(echo "$contents" | grep -cx "$usd_animated" || true)
+if [ "$have_head" = "1" ] && [ "$have_animated" = "1" ]; then
+  echo "==> USD assets present — validating"
+  unzip -p "$zip_path" "$usd_animated" > "$tmp/animated.usda"
+  unzip -p "$zip_path" "$usd_head"     > "$tmp/arkit_head.usdc"
+  if ! python3 -c "
+from pxr import Usd, UsdSkel
+s = Usd.Stage.Open('$tmp/animated.usda')
+assert s, 'failed to open animated.usda'
+anims = [p for p in s.Traverse() if p.IsA(UsdSkel.Animation)]
+assert anims, 'no UsdSkelAnimation prim in animated.usda'
+attr = UsdSkel.Animation(anims[0]).GetBlendShapeWeightsAttr()
+n = len(attr.GetTimeSamples())
+assert n > 0, 'no blendShapeWeights time samples'
+print(f'    UsdSkelAnimation OK ({n} samples)')
+" 2>&1; then
+    echo "FAIL: USD validation failed" >&2
+    exit 1
+  fi
+elif [ "$have_head" = "0" ] && [ "$have_animated" = "0" ]; then
+  echo "==> USD assets not present (run scripts/export_arkit_head_to_usd.py to enable)"
+else
+  echo "FAIL: partial USD bundle — one file present without the other" >&2
+  echo "      head=$have_head animated=$have_animated" >&2
+  exit 1
+fi
+
 # 7. CSV sanity --------------------------------------------------------------
 unzip -p "$zip_path" "${clip_stem}/${clip_stem}_blendshapes.csv" > "$tmp/blendshapes.csv"
 header=$(head -1 "$tmp/blendshapes.csv")

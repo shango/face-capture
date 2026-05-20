@@ -14,3 +14,8 @@ pydantic-settings>=2.5
 # >=1.36: storage.py passes request_checksum_calculation /
 # response_checksum_validation Config options, added in botocore 1.36.
 boto3>=1.36
+
+# USD authoring (per-job <clip>_animated.usda baked from CSV in
+# pipeline/usd_export.py). usd-core is Pixar's official pure-pip
+# distribution of the Python bindings — no DCC dependency at runtime.
+usd-core>=24.05
