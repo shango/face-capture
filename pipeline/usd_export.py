@@ -46,6 +46,61 @@ _NON_BLENDSHAPE_COLS: frozenset[str] = frozenset({
 })
 
 
+# The 52 standard ARKit blendshape names. Used to recover a clean blendshape
+# identity from DCC-exporter-mangled USD names: mayaUSDExport names blendshapes
+# after the *target geometry* with the deformer/namespace prefixed, e.g.
+# `_Mesh_ncl1_1_jawOpen_jawOpenShape` rather than the deformer alias `jawOpen`.
+# The CSV columns use clean ARKit names, so without this remap the bake matches
+# zero columns and the animated USD comes out motionless.
+_ARKIT_52: tuple[str, ...] = (
+    "eyeBlinkLeft", "eyeLookDownLeft", "eyeLookInLeft", "eyeLookOutLeft",
+    "eyeLookUpLeft", "eyeSquintLeft", "eyeWideLeft",
+    "eyeBlinkRight", "eyeLookDownRight", "eyeLookInRight", "eyeLookOutRight",
+    "eyeLookUpRight", "eyeSquintRight", "eyeWideRight",
+    "jawForward", "jawLeft", "jawRight", "jawOpen",
+    "mouthClose", "mouthFunnel", "mouthPucker", "mouthRight", "mouthLeft",
+    "mouthSmileLeft", "mouthSmileRight", "mouthFrownLeft", "mouthFrownRight",
+    "mouthDimpleLeft", "mouthDimpleRight",
+    "mouthStretchLeft", "mouthStretchRight",
+    "mouthRollLower", "mouthRollUpper",
+    "mouthShrugLower", "mouthShrugUpper",
+    "mouthPressLeft", "mouthPressRight",
+    "mouthLowerDownLeft", "mouthLowerDownRight",
+    "mouthUpperUpLeft", "mouthUpperUpRight",
+    "browDownLeft", "browDownRight", "browInnerUp",
+    "browOuterUpLeft", "browOuterUpRight",
+    "cheekPuff", "cheekSquintLeft", "cheekSquintRight",
+    "noseSneerLeft", "noseSneerRight",
+    "tongueOut",
+)
+_ARKIT_BY_LOWER: dict[str, str] = {n.lower(): n for n in _ARKIT_52}
+
+
+def _canonical_arkit_name(rig_name: str) -> str | None:
+    """Recover the ARKit name a (possibly mangled) rig blendshape name encodes.
+
+    Returns the canonical ARKit-52 name if `rig_name`, after dropping a trailing
+    "Shape", ends with one (case-insensitive, longest match wins so
+    `mouthStretchRight` isn't shadowed by `mouthRight`). The match must fall on a
+    name boundary — start of string or a non-alphanumeric separator — so an
+    embedded substring can't false-match. Returns None for names that encode no
+    ARKit shape (custom rigs), leaving the caller's exact-match path in charge.
+    """
+    low = rig_name.lower()
+    if low.endswith("shape"):
+        low = low[: -len("shape")]
+    best: str | None = None
+    for arkit_lower, arkit in _ARKIT_BY_LOWER.items():
+        if not low.endswith(arkit_lower):
+            continue
+        boundary = len(low) - len(arkit_lower)
+        if boundary != 0 and low[boundary - 1].isalnum():
+            continue  # suffix lands mid-token, not on a separator
+        if best is None or len(arkit_lower) > len(best.lower()):
+            best = arkit
+    return best
+
+
 @dataclass(frozen=True)
 class BakeResult:
     """Summary of a bake — surfaced to the orchestrator for logging."""
@@ -129,7 +184,17 @@ def _build_weight_frames(
     Unmatched CSV columns are dropped (the rig has no slot for them); rig
     targets with no CSV column stay at 0.0.
     """
-    rig_index_by_lower = {name.lower(): i for i, name in enumerate(rig_blendshapes)}
+    # Map every key a CSV column might arrive under to its rig slot. The raw
+    # lowercased rig name is primary (exact match, as before); the recovered
+    # ARKit name is a fallback so mangled exporter names like
+    # `_Mesh_ncl1_1_jawOpen_jawOpenShape` still resolve from the CSV's `jawOpen`.
+    rig_index_by_lower: dict[str, int] = {}
+    for i, name in enumerate(rig_blendshapes):
+        rig_index_by_lower.setdefault(name.lower(), i)
+        canon = _canonical_arkit_name(name)
+        if canon is not None:
+            rig_index_by_lower.setdefault(canon.lower(), i)
+
     col_to_rig: dict[str, int] = {}
     unmatched: list[str] = []
     for col in csv_cols:

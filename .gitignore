@@ -36,6 +36,12 @@ jobs/
 # MediaPipe model weights (downloaded at build/deploy)
 *.task
 
+# Maya source scenes — huge (the ARKit head .ma is ~400 MB, over GitHub's
+# 100 MB limit). Kept locally; the head is exported once to
+# pipeline/assets/arkit_head.usdc (committed) via export_arkit_head_to_usd.py.
+*.ma
+*.mb
+
 # Auxiliary scripts kept locally but excluded from the web-app deploy
 /compare.py
 /retarget.py

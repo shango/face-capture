@@ -210,24 +210,33 @@ def export(
 
     mesh_shape = _find_deformed_mesh(cmds, blendshape_node)
     mesh_xform = cmds.listRelatives(mesh_shape, parent=True, fullPath=True)[0]
-    # Walk up to the top-level transform of this hierarchy — that's what we
-    # want exported, so the USD preserves the grouping (head_mesh under
-    # AR_kit_Gead_Geo).
-    parents = cmds.listRelatives(mesh_xform, allParents=True, fullPath=True) or []
-    root = mesh_xform
-    while parents:
-        root = parents[0]
-        parents = cmds.listRelatives(root, allParents=True, fullPath=True) or []
-    print("[export] root transform: %s   deformed shape: %s" % (root, mesh_shape))
+    # Select ONLY the deformed base mesh — never the hierarchy root.
+    #
+    # mayaUSDExport reads each blendshape target's geometry from the deformer
+    # itself (via inputGeomTarget / baked deltas), so the target meshes must
+    # NOT be in the selection. The supplied rig keeps its 51 targets live in a
+    # sibling `Blendshapes` group (64 meshes); selecting the root dragged that
+    # whole group into the export, and mayaUSD then aborts with
+    # "Blendshapes were requested to be exported for <target>, but none could
+    # be found" on each target mesh. Selecting just the base mesh exports its
+    # ancestors as plain Xforms (grouping preserved) while leaving the target
+    # group out, which is exactly what -exportBlendShapes expects.
+    print("[export] deformed mesh: %s   shape: %s" % (mesh_xform, mesh_shape))
 
-    cmds.select(root, replace=True)
+    cmds.select(mesh_xform, replace=True)
 
     print("[export] writing %s" % out_path)
     cmds.mayaUSDExport(
         file=out_path,
         selection=True,
         exportBlendShapes=True,
-        exportSkels="none",          # no skeleton on this rig
+        # blendShapes are a UsdSkel feature: mayaUSD only writes BlendShape
+        # prims + UsdSkelBindingAPI (skel:blendShapes) when exportSkels is
+        # "auto". With "none" the whole UsdSkel schema is skipped and
+        # -exportBlendShapes has nothing to attach to, producing an empty
+        # stage. "auto" gives a SkelRoot + binding even though this rig has
+        # no joints — which is exactly what pipeline/usd_export.py scans for.
+        exportSkels="auto",
         exportUVs=True,
         exportColorSets=False,
         defaultUSDFormat="usdc",
@@ -237,6 +246,16 @@ def export(
     )
     print("[export] done. %d ARKit shapes available in %s"
           % (len(targets), out_path))
+
+
+def _in_maya_gui() -> bool:
+    """True inside an interactive Maya session (Script Editor), False under
+    mayapy/batch or a plain interpreter."""
+    try:
+        import maya.cmds as cmds  # type: ignore
+        return not cmds.about(batch=True)
+    except Exception:
+        return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -252,4 +271,22 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Executing the whole file in Maya's Script Editor lands here with
+    # sys.argv set to Maya's own launch args (no --ma/--out), so argparse
+    # would abort with `SystemExit: 2`. Detect that and print the
+    # import-and-call recipe instead of crashing.
+    if _in_maya_gui() and not any(a in ("--ma", "--out") for a in sys.argv[1:]):
+        print(
+            "[export] Don't execute this file in the Script Editor — import it\n"
+            "         and call export(). Paste this instead:\n\n"
+            "    import sys, importlib\n"
+            "    sys.path.insert(0, r'<repo>\\scripts')\n"
+            "    import export_arkit_head_to_usd as exp\n"
+            "    importlib.reload(exp)\n"
+            "    exp.export(\n"
+            "        ma_path  = r'<repo>\\AR_kit_Gead_Geo.ma',\n"
+            "        out_path = r'<repo>\\pipeline\\assets\\arkit_head.usdc',\n"
+            "    )\n"
+        )
+    else:
+        raise SystemExit(main())
