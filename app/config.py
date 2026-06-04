@@ -54,6 +54,52 @@ class Settings(BaseSettings):
         description="Hard limit on uploaded video size.",
     )
 
+    # --- Abuse / rate limiting ---
+    # Per-client-IP, enforced in-process (single replica; see app/ratelimit.py).
+    rate_limit_enabled: bool = Field(
+        default=True,
+        description="Master switch for per-IP rate limiting.",
+    )
+    upload_rate_max: int = Field(
+        default=5,
+        description="Max job uploads per IP within upload_rate_window_seconds.",
+    )
+    upload_rate_window_seconds: int = Field(
+        default=600,
+        description="Sliding window (s) for the per-IP upload limit.",
+    )
+    read_rate_max: int = Field(
+        default=120,
+        description="Max status/bundle reads per IP within read_rate_window_seconds.",
+    )
+    read_rate_window_seconds: int = Field(
+        default=60,
+        description="Sliding window (s) for the per-IP read limit.",
+    )
+    max_active_jobs: int = Field(
+        default=4,
+        description=(
+            "Global cap on queued+running jobs. New uploads are refused with "
+            "503 once reached — the backstop against a distributed flood, since "
+            "the pipeline (single worker) is the cost center."
+        ),
+    )
+    trust_proxy: bool = Field(
+        default=True,
+        description=(
+            "Derive the client IP from X-Forwarded-For. True in production "
+            "(behind Railway's proxy); set False if the app is exposed directly."
+        ),
+    )
+    trusted_proxy_hops: int = Field(
+        default=1,
+        description=(
+            "Number of trusted proxy hops; the client IP is taken this many "
+            "entries from the right of X-Forwarded-For. Raise if Railway adds "
+            "additional internal hops in front of the app."
+        ),
+    )
+
     # --- Static SPA ---
     web_dist_dir: Path = Field(
         default=REPO_ROOT / "web" / "dist",

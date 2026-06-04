@@ -8,6 +8,16 @@
 #   R2_BUCKET                — Cloudflare R2 bucket name
 #   PORT                     — 8000 (pin so the public proxy target matches)
 #
+# Optional abuse/rate-limit tuning (sensible defaults in app/config.py; all
+# enforced per client IP, in-process — keep this service at ONE replica):
+#   RATE_LIMIT_ENABLED       — default true
+#   UPLOAD_RATE_MAX          — uploads per IP per window (default 5)
+#   UPLOAD_RATE_WINDOW_SECONDS — default 600
+#   READ_RATE_MAX            — status/bundle reads per IP per window (default 120)
+#   READ_RATE_WINDOW_SECONDS — default 60
+#   MAX_ACTIVE_JOBS          — global queued+running cap (default 4)
+#   TRUSTED_PROXY_HOPS       — XFF hops in front of the app (default 1)
+#
 # Bundle TTL is enforced by R2 lifecycle rules on the bucket, not by this app.
 
 [build]

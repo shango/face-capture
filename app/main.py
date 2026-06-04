@@ -23,7 +23,20 @@ from fastapi.staticfiles import StaticFiles
 from .config import get_settings
 from .health import router as health_router
 from .jobs import router as jobs_router, shutdown_executor
+from .ratelimit import RateLimiter
 from .storage import LocalStorage, get_storage, make_local_storage_router
+
+
+# Hardening headers added to every response. Kept conservative: this API
+# serves JSON and a self-contained SPA from the same origin, so framing and
+# MIME-sniffing are never legitimate.
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Cross-Origin-Opener-Policy": "same-origin",
+}
 
 
 @asynccontextmanager
@@ -41,6 +54,23 @@ def create_app() -> FastAPI:
         version="2.0.0",
         lifespan=lifespan,
     )
+
+    # Per-IP limiters live on app.state so they share one instance across
+    # requests (and are trivially swappable in tests). Single replica → a
+    # process-local limiter is sufficient; see app/ratelimit.py.
+    app.state.upload_limiter = RateLimiter(
+        settings.upload_rate_max, settings.upload_rate_window_seconds
+    )
+    app.state.read_limiter = RateLimiter(
+        settings.read_rate_max, settings.read_rate_window_seconds
+    )
+
+    @app.middleware("http")
+    async def add_security_headers(request, call_next):  # type: ignore[no-untyped-def]
+        response = await call_next(request)
+        for header, value in _SECURITY_HEADERS.items():
+            response.headers.setdefault(header, value)
+        return response
 
     if settings.cors_origins:
         app.add_middleware(

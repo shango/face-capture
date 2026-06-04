@@ -35,12 +35,14 @@ from fastapi import (
     File,
     Header,
     HTTPException,
+    Request,
     UploadFile,
     status,
 )
 from pydantic import BaseModel
 
 from .config import Settings, get_settings
+from .ratelimit import RateLimiter, client_identifier
 from .storage import Storage, get_storage
 
 logger = logging.getLogger(__name__)
@@ -101,6 +103,15 @@ def _remember_job(record: JobRecord) -> None:
     )
     for stale in finished[: len(_jobs) - _MAX_JOB_RECORDS]:
         _jobs.pop(stale.id, None)
+
+
+def _active_job_count() -> int:
+    """Jobs not yet finished — the load the pipeline still owes work for."""
+    return sum(
+        1
+        for r in _jobs.values()
+        if r.status in (JobStatus.queued, JobStatus.running)
+    )
 
 
 def get_executor() -> ProcessPoolExecutor:
@@ -328,6 +339,41 @@ async def _run_pipeline_for_job(
 
 
 # ---------------------------------------------------------------------------
+# Rate limiting
+# ---------------------------------------------------------------------------
+
+
+def _enforce_rate_limit(
+    request: Request, limiter: RateLimiter, settings: Settings
+) -> None:
+    """Raise 429 if the requesting IP is over `limiter`'s budget."""
+    if not settings.rate_limit_enabled:
+        return
+    key = client_identifier(
+        request,
+        trust_proxy=settings.trust_proxy,
+        proxy_hops=settings.trusted_proxy_hops,
+    )
+    result = limiter.try_acquire(key)
+    if not result.allowed:
+        # Round up so Retry-After never tells the client to retry too early.
+        retry_after = int(result.retry_after) + 1
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many requests. Please wait a moment and try again.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+async def enforce_read_rate_limit(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> None:
+    """Dependency: throttle status/bundle polling per IP."""
+    _enforce_rate_limit(request, request.app.state.read_limiter, settings)
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
@@ -337,11 +383,30 @@ router = APIRouter(prefix="/api")
 
 @router.post("/jobs", status_code=status.HTTP_201_CREATED, response_model=JobCreated)
 async def create_job(
+    request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
     storage: Annotated[Storage, Depends(get_storage)],
     video: Annotated[UploadFile, File(description="Source video (multipart field 'video').")],
     content_length: Annotated[int | None, Header(alias="content-length")] = None,
 ) -> JobCreated:
+    # Throttle and shed load BEFORE touching the (up to 500 MB) request body,
+    # so abuse is rejected cheaply.
+    _enforce_rate_limit(request, request.app.state.upload_limiter, settings)
+
+    # Global back-pressure: the pipeline is a single-worker pool, so an
+    # unbounded queue is the real DoS/cost surface. Refuse once the in-flight
+    # count is reached. (A handful of concurrent requests may briefly admit
+    # past the cap; the per-IP limit bounds any single attacker's burst.)
+    if _active_job_count() >= settings.max_active_jobs:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "The server is busy processing other videos. "
+                "Please try again in a few minutes."
+            ),
+            headers={"Retry-After": "60"},
+        )
+
     if (
         content_length is not None
         and content_length > settings.max_upload_bytes + _CONTENT_LENGTH_HEADROOM
@@ -397,7 +462,11 @@ async def create_job(
     return JobCreated(id=job_id, status=record.status, created_at=now)
 
 
-@router.get("/jobs/{job_id}", response_model=JobDetail)
+@router.get(
+    "/jobs/{job_id}",
+    response_model=JobDetail,
+    dependencies=[Depends(enforce_read_rate_limit)],
+)
 async def get_job(job_id: uuid.UUID) -> JobDetail:
     record = _jobs.get(job_id)
     if record is None:
@@ -416,7 +485,11 @@ async def get_job(job_id: uuid.UUID) -> JobDetail:
     )
 
 
-@router.get("/jobs/{job_id}/bundle", response_model=BundleDownload)
+@router.get(
+    "/jobs/{job_id}/bundle",
+    response_model=BundleDownload,
+    dependencies=[Depends(enforce_read_rate_limit)],
+)
 async def get_job_bundle(
     job_id: uuid.UUID,
     storage: Annotated[Storage, Depends(get_storage)],
