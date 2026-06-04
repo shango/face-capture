@@ -246,6 +246,7 @@ export function App(): React.JSX.Element {
         <p className="eyebrow">monocular video → ARKit-52</p>
         <div className="titleline">
           <h1>FaceCap</h1>
+          <span className="version">v0.2.0</span>
           <span className="tag">baseline</span>
         </div>
         <p className="sub">

@@ -80,6 +80,13 @@ header h1 {
   letter-spacing: -0.01em;
 }
 
+.version {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
 .tag {
   font-family: var(--font-mono);
   font-size: 0.625rem;
