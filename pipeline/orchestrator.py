@@ -168,6 +168,71 @@ def _list_aliases(node):
     return result
 
 
+# The 52 standard ARKit blendshape names. Used to recover a clean ARKit
+# identity from rig targets that are namespaced (e.g. Face:jawOpen) or were
+# mangled by a USD round-trip (e.g. _Mesh_ncl1_1_jawOpen_jawOpenShape). The
+# CSV columns use clean ARKit names, so without this such a rig matches zero
+# targets and you'd see the "no ARKit-52 targets matched" warning.
+_ARKIT_52 = (
+    "eyeBlinkLeft", "eyeLookDownLeft", "eyeLookInLeft", "eyeLookOutLeft",
+    "eyeLookUpLeft", "eyeSquintLeft", "eyeWideLeft",
+    "eyeBlinkRight", "eyeLookDownRight", "eyeLookInRight", "eyeLookOutRight",
+    "eyeLookUpRight", "eyeSquintRight", "eyeWideRight",
+    "jawForward", "jawLeft", "jawRight", "jawOpen",
+    "mouthClose", "mouthFunnel", "mouthPucker", "mouthRight", "mouthLeft",
+    "mouthSmileLeft", "mouthSmileRight", "mouthFrownLeft", "mouthFrownRight",
+    "mouthDimpleLeft", "mouthDimpleRight",
+    "mouthStretchLeft", "mouthStretchRight",
+    "mouthRollLower", "mouthRollUpper", "mouthShrugLower", "mouthShrugUpper",
+    "mouthPressLeft", "mouthPressRight",
+    "mouthLowerDownLeft", "mouthLowerDownRight",
+    "mouthUpperUpLeft", "mouthUpperUpRight",
+    "browDownLeft", "browDownRight", "browInnerUp",
+    "browOuterUpLeft", "browOuterUpRight",
+    "cheekPuff", "cheekSquintLeft", "cheekSquintRight",
+    "noseSneerLeft", "noseSneerRight", "tongueOut",
+)
+_ARKIT_BY_LOWER = {{n.lower(): n for n in _ARKIT_52}}
+
+
+def _canonical_arkit_name(rig_name):
+    # Recover the ARKit name a (possibly namespaced/mangled) rig name encodes.
+    # Drop a trailing "Shape", then take the longest ARKit name the result
+    # ends with, on a name boundary (start or non-alphanumeric separator) so
+    # an embedded substring can't false-match (mouthRight vs mouthStretchRight).
+    low = rig_name.lower()
+    if low.endswith("shape"):
+        low = low[:-len("shape")]
+    best = None
+    for arkit_lower, arkit in _ARKIT_BY_LOWER.items():
+        if not low.endswith(arkit_lower):
+            continue
+        boundary = len(low) - len(arkit_lower)
+        if boundary != 0 and low[boundary - 1].isalnum():
+            continue
+        if best is None or len(arkit_lower) > len(best.lower()):
+            best = arkit
+    return best
+
+
+def _match_columns(target_cols, rig_names):
+    # Pair each clean-ARKit CSV column with the rig target that encodes it.
+    # Case-insensitive direct match first; canonical ARKit recovery as a
+    # fallback. Returns [(csv_col, rig_name)]; rig_name is what we key onto.
+    by_key = {{}}
+    for rn in rig_names:
+        by_key.setdefault(rn.lower(), rn)
+        canon = _canonical_arkit_name(rn)
+        if canon is not None:
+            by_key.setdefault(canon.lower(), rn)
+    pairs = []
+    for c in target_cols:
+        rn = by_key.get(c.lower())
+        if rn is not None:
+            pairs.append((c, rn))
+    return pairs
+
+
 def _resolve_csv():
     # 1. Explicit override wins.
     if CSV_PATH and os.path.isfile(CSV_PATH):
@@ -245,14 +310,14 @@ def main():
             print("[apply] WARNING: node not found, skipping: %s" % node_name)
             continue
         targets = _list_aliases(node_name)
-        matched = [c for c in target_cols if c in targets]
+        pairs = _match_columns(target_cols, list(targets.keys()))
         print("[apply] %s: matched %d/%d targets"
-              % (node_name, len(matched), len(targets)))
+              % (node_name, len(pairs), len(targets)))
 
         if CLEAR_EXISTING:
-            for name in matched:
+            for col, alias in pairs:
                 try:
-                    cmds.cutKey("%s.%s" % (node_name, name), clear=True)
+                    cmds.cutKey("%s.%s" % (node_name, alias), clear=True)
                 except Exception:
                     pass
 
@@ -262,12 +327,12 @@ def main():
             except (ValueError, KeyError):
                 continue
             frame = t * fps
-            for name in matched:
+            for col, alias in pairs:
                 try:
-                    v = float(row[name])
+                    v = float(row[col])
                 except ValueError:
                     v = 0.0
-                cmds.setKeyframe("%s.%s" % (node_name, name),
+                cmds.setKeyframe("%s.%s" % (node_name, alias),
                                  time=frame, value=v,
                                  inTangentType="linear",
                                  outTangentType="linear")
@@ -349,6 +414,71 @@ CLEAR_EXISTING = True
 NON_TARGET_COLS = ("frame", "time_seconds", "detected",
                    "head_yaw", "head_pitch", "head_roll",
                    "head_tx", "head_ty", "head_tz")
+
+
+# The 52 standard ARKit blendshape names. Used to recover a clean ARKit
+# identity from shape keys that are namespaced or were mangled by a USD
+# round-trip (e.g. _Mesh_ncl1_1_jawOpen_jawOpenShape). The CSV columns use
+# clean ARKit names, so without this such a rig matches zero shape keys and
+# you'd see the "no ARKit-52 shape keys matched" warning.
+_ARKIT_52 = (
+    "eyeBlinkLeft", "eyeLookDownLeft", "eyeLookInLeft", "eyeLookOutLeft",
+    "eyeLookUpLeft", "eyeSquintLeft", "eyeWideLeft",
+    "eyeBlinkRight", "eyeLookDownRight", "eyeLookInRight", "eyeLookOutRight",
+    "eyeLookUpRight", "eyeSquintRight", "eyeWideRight",
+    "jawForward", "jawLeft", "jawRight", "jawOpen",
+    "mouthClose", "mouthFunnel", "mouthPucker", "mouthRight", "mouthLeft",
+    "mouthSmileLeft", "mouthSmileRight", "mouthFrownLeft", "mouthFrownRight",
+    "mouthDimpleLeft", "mouthDimpleRight",
+    "mouthStretchLeft", "mouthStretchRight",
+    "mouthRollLower", "mouthRollUpper", "mouthShrugLower", "mouthShrugUpper",
+    "mouthPressLeft", "mouthPressRight",
+    "mouthLowerDownLeft", "mouthLowerDownRight",
+    "mouthUpperUpLeft", "mouthUpperUpRight",
+    "browDownLeft", "browDownRight", "browInnerUp",
+    "browOuterUpLeft", "browOuterUpRight",
+    "cheekPuff", "cheekSquintLeft", "cheekSquintRight",
+    "noseSneerLeft", "noseSneerRight", "tongueOut",
+)
+_ARKIT_BY_LOWER = {{n.lower(): n for n in _ARKIT_52}}
+
+
+def _canonical_arkit_name(rig_name):
+    # Recover the ARKit name a (possibly namespaced/mangled) name encodes.
+    # Drop a trailing "Shape", then take the longest ARKit name the result
+    # ends with, on a name boundary so an embedded substring can't false-match
+    # (mouthRight vs mouthStretchRight).
+    low = rig_name.lower()
+    if low.endswith("shape"):
+        low = low[:-len("shape")]
+    best = None
+    for arkit_lower, arkit in _ARKIT_BY_LOWER.items():
+        if not low.endswith(arkit_lower):
+            continue
+        boundary = len(low) - len(arkit_lower)
+        if boundary != 0 and low[boundary - 1].isalnum():
+            continue
+        if best is None or len(arkit_lower) > len(best.lower()):
+            best = arkit
+    return best
+
+
+def _match_columns(target_cols, rig_names):
+    # Pair each clean-ARKit CSV column with the shape key that encodes it.
+    # Case-insensitive direct match first; canonical recovery as a fallback.
+    # Returns [(csv_col, shape_key_name)]; shape_key_name is what we key onto.
+    by_key = {{}}
+    for rn in rig_names:
+        by_key.setdefault(rn.lower(), rn)
+        canon = _canonical_arkit_name(rn)
+        if canon is not None:
+            by_key.setdefault(canon.lower(), rn)
+    pairs = []
+    for c in target_cols:
+        rn = by_key.get(c.lower())
+        if rn is not None:
+            pairs.append((c, rn))
+    return pairs
 
 
 def _mesh_objects():
@@ -435,17 +565,18 @@ def main():
     total_keys = 0
     for obj in objs:
         key_blocks = obj.data.shape_keys.key_blocks
-        matched = [c for c in target_cols if c in key_blocks]
+        pairs = _match_columns(target_cols, [kb.name for kb in key_blocks])
         print("[apply] %s: matched %d/%d shape keys"
-              % (obj.name, len(matched), len(key_blocks)))
+              % (obj.name, len(pairs), len(key_blocks)))
 
         if CLEAR_EXISTING:
             adata = obj.data.shape_keys.animation_data
             if adata and adata.action:
+                names = [sk for _, sk in pairs]
                 for fc in list(adata.action.fcurves):
                     dp = fc.data_path
                     if dp.endswith(".value") and any(
-                            ('["%s"]' % m) in dp for m in matched):
+                            ('["%s"]' % m) in dp for m in names):
                         adata.action.fcurves.remove(fc)
 
         for row in rows:
@@ -454,12 +585,12 @@ def main():
             except (ValueError, KeyError):
                 continue
             frame = int(round(t * fps))
-            for name in matched:
+            for col, sk in pairs:
                 try:
-                    v = float(row[name])
+                    v = float(row[col])
                 except ValueError:
                     v = 0.0
-                kb = key_blocks[name]
+                kb = key_blocks[sk]
                 kb.value = v
                 kb.keyframe_insert(data_path="value", frame=frame)
                 total_keys += 1

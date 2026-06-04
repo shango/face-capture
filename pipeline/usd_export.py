@@ -142,19 +142,34 @@ def _find_or_create_skel_animation(
 ) -> UsdSkel.Animation:
     """Return the SkelAnimation driving `mesh`, creating + binding one if absent.
 
-    mayaUSDExport emits a SkelAnimation prim for any rig where blendshapes were
-    exported (the deformer has weight curves to host). On the off chance the
-    asset was authored without one (or a different exporter was used), we
-    define one as a sibling of the mesh and wire `skel:animationSource`.
+    UsdSkel resolves a skeleton's animation from the `skel:animationSource`
+    binding inherited at the *skeleton* prim — never from a sibling mesh.
+    mayaUSDExport writes the Skeleton as a sibling of the mesh under the
+    SkelRoot (e.g. `head_mesh_Skeleton` next to `head_mesh`), so the binding
+    MUST land on that skeleton (or a shared ancestor). Authoring it on the mesh
+    leaves the skeleton animation-less: UsdSkelCache resolves no anim, the
+    weights never reach the deformer, and the head exports stone-still — which
+    is exactly the "no blendshapes applied" symptom this function exists to
+    prevent.
     """
-    binding = UsdSkel.BindingAPI(mesh)
+    mesh_binding = UsdSkel.BindingAPI(mesh)
+
+    # The animation has to bind to the prim UsdSkel resolves it from: the mesh's
+    # skeleton when it has one, otherwise the SkelRoot ancestor it lives under
+    # (animationSource inherits down namespace, so either reaches the skeleton).
+    skel_targets = mesh_binding.GetSkeletonRel().GetTargets()
+    bind_prim = stage.GetPrimAtPath(skel_targets[0]) if skel_targets else None
+    if not bind_prim or not bind_prim.IsValid():
+        bind_prim = mesh.GetParent()
+    binding = UsdSkel.BindingAPI.Apply(bind_prim)
+
     sources = binding.GetAnimationSourceRel().GetTargets()
     if sources:
         prim = stage.GetPrimAtPath(sources[0])
         if prim and prim.IsA(UsdSkel.Animation):
             return UsdSkel.Animation(prim)
 
-    # No source bound — create one alongside the mesh and wire it up.
+    # No source bound — create one under the SkelRoot and wire it to the skel.
     anim_path = mesh.GetPath().GetParentPath().AppendChild("Anim")
     if not stage.GetPrimAtPath(anim_path):
         anim = UsdSkel.Animation.Define(stage, anim_path)
